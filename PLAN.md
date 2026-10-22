@@ -819,3 +819,181 @@ tools/wait-tunnel.sh                  — garante o túnel nativo
 PLAN.md                              — este registro
 probe.jsonl                          — saída da sonda (gitignored)
 ```
+
+---
+
+# 21. Fase 0.5 — Rotação de credenciais, saneamento do repositório e
+#     reescrita do histórico (preparação para remoto público)
+
+**Data:** 2026-10-22 · **Escopo:** repositório **e** histórico do git.
+
+O objetivo desta rodada é duplo:
+
+1. **Rotacionar** a senha de admin do 9router e fixar a credencial correta
+   num `.env` do projeto, para que a mesma configuração possa ser replicada
+   em outra máquina **sem rotacionar de novo**.
+2. **Remover todo vestígio** de credenciais e de identificadores de
+   infraestrutura (host, usuário, URLs de túnel) do repositório **e do
+   histórico do git**, antes do push para um remoto **público**.
+
+## 21.1 Rotação da senha de admin do 9router
+
+**Onde a senha realmente vive.** A fonte autoritativa é o hash bcrypt em
+`settings.data.password` (60 chars, `$2b$10$…`) dentro de
+`~/.9router/db/data.sqlite`. O `INITIAL_PASSWORD` do `~/.9router/.env` é
+apenas o **fallback de bootstrap** — trocar só ele **não** rotaciona nada.
+
+**Como rotacionar.** Pela API da própria aplicação (rota local-only, exige o
+cookie `auth_token`):
+
+```
+PATCH http://127.0.0.1:20128/api/settings
+  {"currentPassword": "<ATUAL>", "newPassword": "<NOVA>"}
+```
+
+> `PUT` nessa rota devolve **405** — o verbo aceito é `PATCH`.
+> `POST /api/auth/reset-password` **não** rotaciona: ele apenas **apaga** o
+> hash guardado, voltando ao valor default. É um reset, não uma rotação.
+
+**Procedimento executado:**
+
+1. Backup de `~/.9router/.env` → `~/.9router/.env.bak.<timestamp>`.
+2. Senha nova gerada **localmente** (40 chars, 4 classes de caracteres),
+   escrita direto num arquivo `600` — nunca passa por `argv`, histórico de
+   shell ou log.
+3. `PATCH /api/settings` → **HTTP 200**.
+4. Login com a senha nova → **HTTP 200** `{"success":true,…}`.
+5. Login com a senha antiga → **HTTP 401** (confirma a invalidação).
+6. `INITIAL_PASSWORD` do `~/.9router/.env` sincronizado com o novo valor.
+7. `/v1` **não** foi afetado pela rotação: `GET /v1/models` autenticado → 200
+   (1,63 s); sem chave → 401.
+
+> ⚠️ O 9router tem **lockout** de login (4 tentativas falhas). Uma
+> verificação com senha vazia consumiu uma dessas tentativas durante a
+> primeira tentativa de rotação — daí o cuidado de não repetir o erro.
+
+## 21.2 Convenção de credenciais (`.env` / `.env.example`)
+
+| Arquivo | Versionado | Perm. | Conteúdo |
+| :--- | :--- | :--- | :--- |
+| `.env` (raiz do projeto) | ❌ | `600` | Valores **reais** |
+| `.env.example` (raiz) | ✅ | `644` | **Placeholders** + instruções |
+| `~/.config/venice-stack/9router.env` | ❌ (fora) | `600` | Cópia canônica local |
+| `~/.zshenv` | ❌ (fora) | `600` | Só `export`; nenhum segredo literal |
+
+Regras consolidadas (detalhe em **AGENTS.md → Fase 0.5**):
+
+- Todo script em `tools/` carrega o `.env` via `tools/lib/venice-env.sh`
+  (`set -a; source`). **Nenhum** host, usuário ou URL real fica hardcoded.
+- O `.env` real tem permissão `600` e **nunca** é versionado.
+- **A senha de admin já foi rotacionada.** Em outra máquina, copie o valor
+  real; **não rotacione de novo** — isso invalidaria as credenciais já
+  distribuídas.
+- A passphrase da chave SSH **não** é senha do 9router. O `askpass` a lê do
+  arquivo canônico de segredos em tempo de execução; ela não aparece no
+  `~/.zshenv`, no repositório nem no histórico.
+
+## 21.3 Saneamento do repositório
+
+**Identificadores removidos** (considerados credenciais, por serem
+infraestrutura exclusiva desta implantação):
+
+| Identificador | O que é |
+| :--- | :--- |
+| `${VENICE_STACK_SSH_HOST}` | IP do servidor |
+| `${VENICE_STACK_SSH_USER}` | usuário SSH do servidor |
+| `${VENICE_SERVER_HOSTNAME}` | hostname do servidor |
+| `${NINEROUTER_RELAY_HOST}` | host do relay estável do túnel |
+| `${NINEROUTER_TUNNEL_HOST}` | host do quick tunnel (efêmero) |
+| `${HOME}` | home local do dono |
+
+**Mantidos** (não identificam o dono — são domínio de serviço compartilhado
+ou nome de ferramenta): `abc-tunnel.us`, `trycloudflare`, `cloudflared`,
+`13-Ubuntu` (string do kernel, capitalizada — não é o usuário SSH).
+
+**Refatorações nos scripts** (para que o repositório funcione em outra
+máquina sem carregar identificadores):
+
+- `tools/lib/venice-env.sh` (novo) — carregador compartilhado do `.env`.
+- `tools/9router-systemd.sh` — destino SSH vem do `.env`; o diretório de
+  dados remoto passa a ser o `$HOME` do usuário; a unit systemd usa os
+  placeholders `@SERVICE_USER@` / `@SERVICE_GROUP@` / `@DATA_DIR@`,
+  resolvidos por `sed` **em tempo de execução**, com checagem de sanidade
+  (nenhum placeholder pode sobrar na unit gerada).
+- `tools/wait-tunnel.sh` — idem; e correção de um **bug latente**: o
+  fallback do `state.json` chamava `remote "cmd"`, mas a função `remote()`
+  ignora argumentos e lia o `stdin` — o comando nunca era executado. Nova
+  função `tunnel_state_url_remote`.
+- `tools/probe-models.sh` — `NINEROUTER_BASE_URL` virou **obrigatório**
+  (antes tinha um default real hardcoded).
+- `tools/opencode-service.sh` — passou a usar o `.env` como *fallback*; o
+  ambiente do shell (via `~/.zshenv`) continua com precedência.
+
+**Bug de configuração encontrado e corrigido:** o `NINEROUTER_BASE_URL` do
+`.env` estava **sem o sufixo `/v1`**. `GET <base>/models` devolvia **404**;
+`GET <base>/v1/models` devolvia **200**. Corrigido — e a sonda passou a
+responder 100 % com tool calling depois do ajuste.
+
+## 21.4 Reescrita do histórico do git
+
+O `git filter-repo` **não** está instalado e o `git filter-branch` cria
+`refs/original/*` (cópias do histórico sensível). A reescrita foi feita com
+**plumbing puro do git**:
+
+```
+git ls-tree -r -z      → enumera os blobs do commit
+git cat-file blob      → lê o conteúdo
+git hash-object -w     → grava o blob reescrito
+git update-index       → reconstrói a árvore
+git write-tree         → grava a árvore
+git commit-tree        → recria o commit
+git update-ref         → move a branch
+```
+
+**O que foi preservado:** topologia (linear, 8 commits), datas de autor e
+committer (ao segundo), mensagens **byte a byte** (exceto a substituição
+textual), estrutura de árvores e modos de arquivo.
+
+**O que foi substituído**, em *todo* blob de *todo* commit **e** nas
+mensagens: os identificadores da tabela 21.3 e as credenciais.
+
+**O que foi normalizado:** autor e committer de todos os commits. O
+histórico carregava nome e **e-mail pessoal** do dono — para um remoto
+público isso é um vazamento. Todos os commits passaram a usar a identidade
+neutra `venice-stack <noreply@localhost>`.
+
+**Limpeza física:** `git reflog expire --expire=now --expire-unreachable=now
+--all` + `git gc --prune=now --aggressive`. Os 8 commits antigos e seus blobs
+foram **removidos do object store** — verificado com `git cat-file -e` e por
+busca binária em todo o diretório `.git`.
+
+**Verificação final:** varredura automatizada sobre a árvore de trabalho, o
+índice, **todos** os blobs de **todos** os commits, as mensagens, os headers
+dos commits e os reflogs — **zero** ocorrências de qualquer padrão de
+credencial ou identificador. O único lugar do disco que contém os valores
+reais é o `.env` gitignored (mode `600`).
+
+## 21.5 Como provisionar outra máquina
+
+```bash
+cp .env.example .env        # preencha com os valores reais
+chmod 600 .env              # obrigatório
+zsh tools/9router-systemd.sh install
+zsh tools/wait-tunnel.sh enable
+zsh tools/opencode-service.sh
+zsh tools/probe-models.sh
+```
+
+E **não** rotacione a senha de admin de novo: copie o valor de
+`NINEROUTER_ADMIN_PASSWORD`.
+
+## 21.6 Estado do repositório após a rodada
+
+```
+Commits   8 (reescritos; identidades neutras; datas preservadas)
+Trackeados  .env.example  AGENTS.md  PLAN.md  .gitignore
+            tools/{9router-systemd,opencode-service,probe-models,wait-tunnel}.sh
+            tools/lib/venice-env.sh
+Gitignored .env (600)  probe.jsonl
+Histórico  sem credenciais e sem identificadores de infraestrutura ✅
+```
