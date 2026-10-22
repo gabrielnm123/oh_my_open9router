@@ -8,6 +8,23 @@
 **Status da Fase 4:** ✅ CONCLUÍDA E VERIFICADA
 **Status da Fase 5:** ✅ CONCLUÍDA E VERIFICADA
 
+> **Nota de redação (Fase 0.5).** Este repositório vai para um remoto público.
+> Todo identificador real de infraestrutura e toda credencial foram substituídos
+> pelo **nome da variável** que os carrega no `.env` (gitignored, `600`):
+>
+> | Token neste documento | Variável no `.env` |
+> | :--- | :--- |
+> | `${VENICE_STACK_SSH_HOST}` | host/IP do servidor |
+> | `${VENICE_STACK_SSH_USER}` | usuário SSH do servidor |
+> | `${VENICE_SERVER_HOSTNAME}` | hostname do servidor |
+> | `${NINEROUTER_RELAY_HOST}` | host do relay estável do túnel |
+> | `${NINEROUTER_TUNNEL_HOST}` | host do quick tunnel (efêmero) |
+> | `${HOME}` | home local |
+>
+> Os valores reais estão no `.env` da raiz e em
+> `~/.config/venice-stack/9router.env` (`600`, fora do repositório).
+> O `.env.example` versionado traz os mesmos campos com placeholders.
+
 ---
 
 ## 0. Resumo executivo

@@ -14,13 +14,27 @@
 #   zsh tools/wait-tunnel.sh --status     # so consulta o status do tunel
 #
 # Variaveis de ambiente:
-#   NINEROUTER_SSH_HOST   (default: ${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST})
+#   NINEROUTER_SSH_HOST   (formato user@host; se ausente, montado a partir de
+#                          VENICE_STACK_SSH_USER + VENICE_STACK_SSH_HOST do .env)
 #   WAIT_TUNNEL_TIMEOUT   (default: 240, segundos)
 #   WAIT_TUNNEL_INTERVAL  (default: 3, segundos entre tentativas)
 
 set -euo pipefail
 
-SSH_HOST="${NINEROUTER_SSH_HOST:-${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST}}"
+# Carrega o .env da raiz do projeto (fonte da verdade; gitignored, 600).
+VENICE_PROJECT_ROOT="${0:A:h:h}"
+source "${0:A:h}/lib/venice-env.sh"
+
+# Destino SSH. Nao ha host real hardcoded no repositorio: vem do ambiente ou
+# do .env (veja .env.example).
+if [[ -n "${NINEROUTER_SSH_HOST:-}" ]]; then
+  SSH_HOST="${NINEROUTER_SSH_HOST}"
+elif [[ -n "${VENICE_STACK_SSH_HOST:-}" && -n "${VENICE_STACK_SSH_USER:-}" ]]; then
+  SSH_HOST="${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST}"
+else
+  printf '[wait-tunnel] ERRO: host SSH indefinido (defina VENICE_STACK_SSH_HOST e VENICE_STACK_SSH_USER no .env)\n' >&2
+  exit 1
+fi
 TIMEOUT="${WAIT_TUNNEL_TIMEOUT:-240}"
 INTERVAL="${WAIT_TUNNEL_INTERVAL:-3}"
 ACTION="${1:-enable}"
@@ -40,7 +54,9 @@ remote() {
 cli_token_remote() {
   remote <<'REMOTE'
 set -euo pipefail
-D="/home/${VENICE_STACK_SSH_USER}/.9router"
+# O diretório de dados vive no HOME do usuário remoto: o repositório não
+# carrega o nome do usuário nem o caminho absoluto da máquina.
+D="${HOME}/.9router"
 MID="$(cat "${D}/machine-id")"
 SEC="$(cat "${D}/auth/cli-secret")"
 printf '%s' "${MID}9r-cli-auth${SEC}" | sha256sum | cut -c1-16
@@ -54,6 +70,14 @@ tunnel_status_remote() {
 set -euo pipefail
 TOKEN="${token}"
 curl -s --max-time 20 -H "x-9r-cli-token: \${TOKEN}" http://127.0.0.1:20128/api/tunnel/status
+REMOTE
+}
+
+# URL do tunel direto lida do state.json que o proprio 9router grava.
+# O caminho usa o HOME do usuario remoto (sem nome de usuario no repositorio).
+tunnel_state_url_remote() {
+  remote <<'REMOTE'
+cat "${HOME}/.9router/tunnel/state.json" 2>/dev/null
 REMOTE
 }
 
@@ -159,8 +183,7 @@ while (( SECONDS < deadline )); do
 
   # Fallback: le o state.json gravado pelo proprio 9router.
   if [[ -z "$url" ]]; then
-    url="$(remote "cat /home/${VENICE_STACK_SSH_USER}/.9router/tunnel/state.json 2>/dev/null" 2>/dev/null \
-      | json_get tunnelUrl)"
+    url="$(tunnel_state_url_remote 2>/dev/null | json_get tunnelUrl)"
   fi
 
   sleep "$INTERVAL"

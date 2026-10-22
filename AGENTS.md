@@ -1,161 +1,187 @@
-# **PLANO DE EXECUÇÃO — AGENTS.md**
+# AGENTS.md — Plano de Execução do 9router com OpenCode
 
-Este documento estabelece o fluxo de trabalho detalhado para subida, hardening e validação do servidor **9router** (IP `${VENICE_STACK_SSH_HOST}`), bem como a integração do ecossistema local utilizando **OpenCode** e **oh-my-opencode-slim**.
+## 0\. Contexto, Convenções e Regras Não-Negociáveis
 
----
+- **Estado Atual:** 9router desligado no servidor, usuário e host lidos do `.env` do projeto. A chave SSH requer passphrase.  
+- **Convenções de Shell:** Local em `zsh` (`~/.zshenv`), servidor em `bash`.  
+- **Regras de Segurança:** O túnel nativo é intocável. Porta `20128` restrita ao túnel. Hardening obrigatório antes de expor o serviço.
 
-# **0\. Contexto, Convenções e Regras Não-Negociáveis**
-
-## **Estado Atual**
-
-* **9router:** Desligado voluntariamente no servidor. O túnel nativo encontra-se inativo até a inicialização da aplicação.  
-* **Ambiente Servidor:** Usuário `${VENICE_STACK_SSH_USER}`, sem sessão SSH ativa no momento.  
-* **Ambiente Local:** OpenCode v2 instalado (WSL/zsh). A chave SSH requer autenticação via passphrase.
-
-## **Diretrizes de Ambiente e Shell**
-
-| Ambiente | Shell / Contexto | Arquivo de Carga | Diretriz de Execução |
-| :---- | :---- | :---- | :---- |
-| **Local** | `zsh` (WSL / OpenCode) | `~/.zshenv` | Variáveis de ambiente *devem* residir em `~/.zshenv` (não em `.zshrc`) para suportar shells não-interativos (`zsh -c`). |
-| **Servidor** | `bash` (Ubuntu) | Service-bound | Configurações globais injetadas via `systemd` (`EnvironmentFile=`). Sem alteração de perfil do shell. |
-
-## **Regras de Execução e Segurança**
-
-1. **Comandos com PATH Explicito:** Invocar dependências do Node.js/npm no servidor usando `bash -lc`.  
-2. **Sintaxe Zsh Local:** Utilizar `printf` em vez de `echo` para strings contendo barras invertidas (`\`). Manter aspas em variáveis para prevenir expansões indevidas.  
-3. **Isolamento de Túnel:** O túnel nativo do 9router é intocável. Proibido criar instâncias paralelas do Cloudflared/Ngrok ou alterar a URL de roteamento.  
-4. **Segurança de Porta:** A porta `20128` não deve ser exposta externamente. Todo o tráfego externo deve transitar obrigatoriamente pelo túnel.  
-5. **Resiliência e Registro:** Efetuar backup dos arquivos críticos (`data.sqlite`, `opencode.json`, `oh-my-opencode-slim.json`) antes de alterações. Garantir idempotência em todas as fases e registrar logs em `PLAN.md`.
+> **Credenciais:** nenhuma credencial, host ou URL real vive neste repositório.
+> A fonte da verdade é o `.env` da raiz (gitignored, `600`), documentado pelo
+> `.env.example` (versionado, só placeholders). Ver **Fase 0.5**.
 
 ---
 
-# **1\. Referência Rápida: Endpoints Internos do 9router**
+## Fase 0 — Preparação, Descoberta, Hardening e Partida
 
-Chamadas locais via SSH no servidor possuem acesso direto aos endpoints administrativos internos (restritos à interface local):
+### 0.0 Autenticação SSH Não-Interativa (Local)
 
-| Método | Endpoint | Função / Finalidade |
-| :---- | :---- | :---- |
-| `GET` | `/api/health` | Verificação de liveness do serviço. |
-| `GET` | `/api/version` | Retorna a versão instalada da aplicação. |
-| `GET` | `/api/providers` | Lista as conexões de provedores configuradas. |
-| `GET` | `/api/models` | Consulta o catálogo de modelos roteáveis. |
-| `GET` | `/api/keys` | Gerenciamento de chaves de API de clientes. |
-| `POST` | `/api/tunnel/enable` | Habilita e força a inicialização do túnel nativo. |
-| `POST` | `/api/tunnel/disable` | Desativa a conexão do túnel nativo. |
+Adicionar o seguinte bloco no `~/.zshenv` local para configurar o `askpass`.
+A passphrase **não** fica no `~/.zshenv`: o script de askpass a lê, em tempo de
+execução, do arquivo canônico de segredos (`~/.config/venice-stack/9router.env`,
+modo `600`), que por sua vez é gerado a partir do `.env` do projeto.
 
----
+if \[\[ \-z \${VENICE\_STACK\_SSH\_READY-} \]\]; then
 
-# **2\. Fases de Execução**
+  export VENICE\_STACK\_SSH\_READY=1
 
-## **Fase 0 — Preparação, Descoberta, Hardening e Partida**
+  cat \> "\${HOME}/.ssh/askpass-venice.sh" \<\<'ASKPASS'
 
-### **0.0 Autenticação SSH Não-Interativa (Local)**
+\#\!/usr/bin/env zsh
 
-Configurar o `~/.zshenv` local para carregar o `ssh-agent` e inicializar a chave SSH com suporte a askpass sem intervenção manual.\# Validação da sessão SSH não-interativa
+SECRETS="\${HOME}/.config/venice-stack/9router.env"
+
+if \[\[ \! \-r "\$SECRETS" \]\]; then
+
+  printf 'askpass: %s ausente ou ilegivel\\n' "\$SECRETS" \>&2
+
+  exit 1
+
+fi
+
+grep \-m1 '\^SSH\_KEY\_PASSPHRASE=' "\$SECRETS" | cut \-d= \-f2\- | tr \-d "\\r" | sed \-E "s/^'//; s/'\$//"
+
+ASKPASS
+
+  chmod 700 "\${HOME}/.ssh/askpass-venice.sh"
+
+  export SSH\_ASKPASS="\${HOME}/.ssh/askpass-venice.sh"
+
+  export SSH\_ASKPASS\_REQUIRE=force
+
+  export DISPLAY="\${DISPLAY:-:0}"
+
+  \_vs\_agent\_env="\${HOME}/.ssh/venice-agent.env"
+
+  \[\[ \-f "\${\_vs\_agent\_env}" \]\] && source "\${\_vs\_agent\_env}"
+
+  if \! ssh-add \-l \>/dev/null 2\>&1; then
+
+    ssh-agent \-s \> "\${\_vs\_agent\_env}"
+
+    source "\${\_vs\_agent\_env}"
+
+    ssh-add "\${HOME}/.ssh/id\_ed25519" \\
+
+      \</dev/null \>/dev/null 2\>&1
+
+  fi
+
+  unset \_vs\_agent\_env
+
+fi
+
+Testar conexão:
 
 ssh-add \-l
 
-ssh \-o BatchMode=yes ${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST} 'echo SSH\_OK'
+ssh \-o BatchMode=yes "\${VENICE\_STACK\_SSH\_USER}@\${VENICE\_STACK\_SSH\_HOST}" 'echo SSH\_OK'
 
-zsh \-c 'ssh \-o BatchMode=yes ${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST} "echo NONINTERACTIVE\_OK"'
+zsh \-c 'ssh \-o BatchMode=yes "\${VENICE\_STACK\_SSH\_USER}@\${VENICE\_STACK\_SSH\_HOST}" "echo NONINTERACTIVE\_OK"'
 
-### **0.1 Mapeamento e Diagnóstico do Servidor**
+### 0.1 Diagnóstico do Servidor
 
-Coletar métricas do ambiente remoto:ssh ${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST} 'bash \-lc "uname \-a; node \-v; npm \-v; nproc; free \-h; df \-h /"'
+ssh "\${VENICE\_STACK\_SSH\_USER}@\${VENICE\_STACK\_SSH\_HOST}" 'bash \-lc "uname \-a; node \-v; npm \-v; nproc; free \-h; df \-h /"'
 
-### **0.2 Configuração do Daemon Systemd**
+### 0.2 Iniciar o 9router sob systemd
 
-Criar e provisionar a unidade de serviço `/etc/systemd/system/9router.service` no servidor com as variáveis operacionais mínimas (PORT=20128, NODE\_ENV=production, Restart=always).\# Comandos de inicialização no servidor
+Criar o serviço `/etc/systemd/system/9router.service` no servidor com `Restart=always` e `PORT=20128`. Ativar via `systemctl enable --now 9router`.
 
-sudo systemctl daemon-reload
+O gerador da unit está versionado em `tools/9router-systemd.sh` (usuário, grupo
+e diretório de dados são resolvidos em tempo de execução no servidor — o
+repositório não carrega nenhum identificador da máquina):
 
-sudo systemctl enable 9router.service
+zsh tools/9router-systemd.sh install
 
-sudo systemctl start 9router.service
+zsh tools/9router-systemd.sh status
 
-### **0.3 Hardening de Segurança**
+### 0.3 Hardening
 
-Editar o arquivo `~/9router/.env` para garantir a aplicação das políticas de segurança:
+Editar `~/.9router/.env` definindo `REQUIRE_API_KEY=true`, alterando `INITIAL_PASSWORD` e definindo `JWT_SECRET`. Reiniciar o serviço e validar que requisições sem chave retornam `401`.
 
-* Definir `REQUIRE_API_KEY=true`  
-* Alterar o valor padrão de `INITIAL_PASSWORD`  
-* Definir uma chave secreta robusta em `JWT_SECRET`
+### 0.4 Forçar e Aguardar o Túnel
 
-Reiniciar o serviço e validar a restrição de acesso (requisições sem chave devem retornar código `401 Unauthorized`).
+Criar o script local `tools/wait-tunnel.sh` para forçar o POST em `/api/tunnel/enable` até que o endpoint público responda `200` ou `401`.
 
-### **0.4 Restabelecimento do Túnel Nativo**
+### 0.5 Convenção de Credenciais (`.env` / `.env.example`)
 
-Criar o script local tools/wait-tunnel.sh. O script efetuará chamadas via SSH para a rota local POST /api/tunnel/enable até que a URL pública do túnel responda com código HTTP 200 ou `401`.
+Este repositório vai para um remoto **público**. Nenhum valor real — senha, IP,
+hostname, usuário SSH ou URL de túnel — pode existir no repositório, nem no
+histórico do git.
+
+**Onde vive cada coisa:**
+
+| Arquivo | Versionado? | Perm. | Conteúdo |
+| :--- | :--- | :--- | :--- |
+| `.env` (raiz do projeto) | ❌ não (`gitignore`) | `600` | Valores **reais** |
+| `.env.example` (raiz do projeto) | ✅ sim | `644` | Só **placeholders** + instruções |
+| `~/.config/venice-stack/9router.env` | ❌ fora do repo | `600` | Cópia canônica local dos segredos |
+| `~/.zshenv` | ❌ fora do repo | — | Só `export`; **nunca** segredos literais |
+
+**Regras:**
+
+1. Todo script em `tools/` carrega o `.env` via `tools/lib/venice-env.sh`
+   (`set -a; source`). Nenhum host, usuário ou URL fica hardcoded.
+2. O `.env` real tem permissão `600` e **nunca** é commitado.
+3. Ao provisionar outra máquina: `cp .env.example .env`, preencher com os
+   valores reais, `chmod 600 .env`.
+4. **Senha de admin do 9router já rotacionada.** Copie o valor real
+   (`NINEROUTER_ADMIN_PASSWORD`); **não rotacione de novo** — isso invalidaria
+   as credenciais já distribuídas.
+5. A passphrase da chave SSH **não** é senha do 9router. Ela nunca é
+   digitada em lugar nenhum: o `askpass` a lê do arquivo canônico de segredos
+   em tempo de execução.
+
+**Rotacionar a senha de admin (só se quiser invalidar a atual):**
+
+A fonte autoritativa é o hash bcrypt em `settings.data.password` do
+`~/.9router/db/data.sqlite`. O `INITIAL_PASSWORD` do `.env` do servidor é
+apenas o fallback de bootstrap — trocar só ele **não** rotaciona nada.
+
+A rotação correta é pela API da própria aplicação (rota local-only, exige o
+cookie `auth_token`):
+
+curl \-sS \-X PATCH http://127.0.0.1:20128/api/settings \\
+  \-H 'Content-Type: application/json' \\
+  \-b "auth_token=$JWT" \\
+  \-d '{"currentPassword":"<ATUAL>","newPassword":"<NOVA>"}'
+
+`PUT` nessa rota retorna `405` — o verbo aceito é `PATCH`. Depois de rotacionar,
+atualize `INITIAL_PASSWORD` em `~/.9router/.env` (servidor) **e**
+`NINEROUTER_ADMIN_PASSWORD` no `.env` local + em
+`~/.config/venice-stack/9router.env`, sempre em conjunto.
 
 ---
 
-## **Fase 1 — Configuração do Provedor no OpenCode**
+## Fase 1 — Configuração do OpenCode
 
-1. Persistir a chave de API no ambiente local executando a gravação em `~/.zshenv`:export NINEROUTER\_API\_KEY="sua\_chave\_aqui"  
-2. Atualizar a configuração do cliente em `~/.config/opencode/opencode.json` apontando para o provedor `9router` com o endpoint resolvido do túnel nativo.
+- Adicionar `NINEROUTER_API_KEY` no `~/.zshenv` (export puro; o valor vem do `.env` do projeto).  
+- Criar `~/.config/opencode/opencode.json` apontando para o provedor `9router` com a baseURL do túnel.
+- A `baseURL` é `NINEROUTER_BASE_URL` **com o sufixo `/v1`** — é a rota OpenAI-compatível. O host puro fica em `NINEROUTER_RELAY_HOST`.
+- A chave de API entra no **ambiente do serviço** do OpenCode (`zsh tools/opencode-service.sh`), não no arquivo de config versionado.
 
 ---
 
-## **Fase 2 — Instalação do Framework de Agentes**
-
-Executar o setup do ambiente e verificar a integridade da instalação dos subagentes:h
-
-# **Instalação do ecossistema de agentes em background**
+## Fase 2 — Instalação do Framework
 
 npx oh-my-opencode-slim@latest install \--no-tui \--background-subagents=yes
 
-# **Diagnóstico e validação da instalação**
-
 npx oh-my-opencode-slim@latest doctor
 
-\---
+---
 
-\#\#\# Fase 3 — Sondagem e Validação de Modelos
+## Fase 3 — Sondagem de Modelos (`tools/probe-models.sh`)
 
-1\. Obter a lista completa de modelos disponíveis via API do 9router.
+Criar o script de teste de latência e suporte a tool calling (`get_weather`) salvando em `probe.jsonl`.
 
-2\. Desenvolver o script de benchmark \`tools/probe-models.sh\`.
+---
 
-3\. Executar o script enviando requisições contendo payload estruturado com \`tool\_choice=auto\` e a definição da função \`get\_weather\`.
+## Fase 4 — Atribuição aos Agentes
 
-4\. Mapear a telemetria no arquivo de saída \`probe.jsonl\` contendo:
+Configurar os melhores modelos aprovados em `~/.config/opencode/oh-my-opencode-slim.json` para cada papel (orchestrator, oracle, explorer, designer, fixer, observer, council).
 
-   \* Tempo de resposta (latência)
+---
 
-   \* Status HTTP retornado
+## Fase 5 — Verificação Final
 
-   \* Confirmação de disparo correto de \*Tool Calling\*
-
-\---
-
-\#\#\# Fase 4 — Mapeamento e Atribuição de Agentes
-
-Com base nos dados coletados na fase de sondagem, estruturar o arquivo de configuração \`\~/.config/opencode/oh-my-opencode-slim.json\` vinculando os modelos aprovados a cada papel especializado:
-
-\* \*\*Orchestrator:\*\* Gestão e distribuição de tarefas complexas.
-
-\* \*\*Oracle:\*\* Consultas de alto nível e raciocínio analítico.
-
-\* \*\*Explorer:\*\* Varredura, leitura e contexto de código.
-
-\* \*\*Designer:\*\* Arquitetura de interface e padrões estéticos.
-
-\* \*\*Fixer:\*\* Resolução de bugs e refatoração direta.
-
-\* \*\*Observer:\*\* Auditoria e acompanhamento de execução.
-
-\* \*\*Council:\*\* Validação cruzada e consenso de decisões.
-
-\---
-
-\#\#\# Fase 5 — Homologação Final
-
-Executar a bateria de testes integrados para garantir o alinhamento da pilha:
-
-\`\`\`bash
-
-\# Validação da suíte do plugin e conectividade do catálogo
-
-npx oh-my-opencode-slim doctor
-
-opencode models  
+Validar a integração com `npx oh-my-opencode-slim doctor` e `opencode models`.

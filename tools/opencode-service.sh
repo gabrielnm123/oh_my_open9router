@@ -37,6 +37,12 @@
 
 set -euo pipefail
 
+# Carrega o .env da raiz do projeto como FALLBACK. A fonte canonica continua
+# sendo o ambiente do shell (herdado do `~/.zshenv`, regra do AGENTS.md);
+# o `.env` só cobre o caso de o script rodar fora de um shell que o carregou.
+VENICE_PROJECT_ROOT="${0:A:h:h}"
+source "${0:A:h}/lib/venice-env.sh"
+
 TIMEOUT="${OPENCODE_SERVICE_TIMEOUT:-120}"
 PROBE_MODEL="${NINEROUTER_PROBE_MODEL:-9router/ag/claude-sonnet-4-6}"
 ACTION="${1:-ensure}"
@@ -74,8 +80,10 @@ service_healthy() {
   timeout 20 opencode api get /api/info >/dev/null 2>&1
 }
 
-# Este shell tem as variaveis? (precisa ter sido aberto a partir de um zsh que
-# leu o ~/.zshenv - por isso o script exige `zsh tools/opencode-service.sh`)
+# Este shell tem as variaveis? (o ambiente e a fonte canonica; o `.env` da raiz
+# entra como fallback, exportado pelo lib). Precisa ter sido aberto a partir de
+# um zsh que leu o ~/.zshenv - por isso o script exige
+# `zsh tools/opencode-service.sh`
 shell_has_var() {
   local var="$1"
   [[ -n "$(printenv "$var" 2>/dev/null)" ]]

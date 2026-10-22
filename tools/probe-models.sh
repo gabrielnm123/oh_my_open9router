@@ -27,15 +27,21 @@
 #   zsh tools/probe-models.sh --models lista.txt   # sonda uma lista propria
 #
 # Variaveis de ambiente:
-#   NINEROUTER_BASE_URL  (default: https://${NINEROUTER_RELAY_HOST}/v1)
-#   NINEROUTER_API_KEY   (fallback: ~/.config/venice-stack/9router.env)
+#   NINEROUTER_BASE_URL  (obrigatorio; vem do .env da raiz do projeto)
+#   NINEROUTER_API_KEY   (obrigatorio; vem do .env ou do ambiente; fallback:
+#                         ~/.config/venice-stack/9router.env)
 #   PROBE_CONCURRENCY    (default: 4)
 #   PROBE_TIMEOUT        (default: 120, segundos por requisicao)
 #   PROBE_REPEAT         (default: 1)
 
 set -euo pipefail
 
-BASE_URL="${NINEROUTER_BASE_URL:-https://${NINEROUTER_RELAY_HOST}/v1}"
+# Carrega o .env da raiz do projeto (fonte da verdade; gitignored, 600).
+# Nao ha URL real hardcoded no repositorio: vem do .env (veja .env.example).
+VENICE_PROJECT_ROOT="${0:A:h:h}"
+source "${0:A:h}/lib/venice-env.sh"
+
+BASE_URL="${NINEROUTER_BASE_URL:-}"
 CONCURRENCY="${PROBE_CONCURRENCY:-4}"
 TIMEOUT="${PROBE_TIMEOUT:-120}"
 REPEAT="${PROBE_REPEAT:-1}"
@@ -53,7 +59,7 @@ while (( $# > 0 )); do
     --models)      MODELS_FILE="$2"; shift 2 ;;
     --filter)      FILTER="$2";      shift 2 ;;
     --append)      APPEND=true;      shift ;;
-    -h|--help)     sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "opcao desconhecida: $1" >&2; exit 1 ;;
   esac
 done
@@ -64,14 +70,19 @@ die()  { printf '[probe] ERRO: %s\n' "$*" >&2; exit 1; }
 
 # ------------------------------------------------------------- credenciais ---
 
-# A chave vem do ambiente (regra do AGENTS.md: env no ~/.zshenv). Fallback para
-# o arquivo de segredos, para o script funcionar fora de um shell com .zshenv.
+# A chave vem do ambiente (regra do AGENTS.md: env no ~/.zshenv) ou do `.env`
+# da raiz (carregado acima). Fallback para o arquivo canonico de segredos, para
+# o script funcionar fora de um shell com .zshenv.
 if [[ -z "${NINEROUTER_API_KEY:-}" ]]; then
   SECRETS="${HOME}/.config/venice-stack/9router.env"
   [[ -r "$SECRETS" ]] || die "NINEROUTER_API_KEY ausente e $SECRETS ilegivel"
-  NINEROUTER_API_KEY="$(grep '^NINEROUTER_API_KEY=' "$SECRETS" | cut -d= -f2-)"
+  NINEROUTER_API_KEY="$(strip_quotes "$(grep '^NINEROUTER_API_KEY=' "$SECRETS" | cut -d= -f2-)")"
 fi
 [[ -n "$NINEROUTER_API_KEY" ]] || die "NINEROUTER_API_KEY vazia"
+
+# A URL base tambem e obrigatoria: sem valor real no repositorio, ela vem do
+# `.env` (veja .env.example) ou do ambiente.
+[[ -n "$BASE_URL" ]] || die "NINEROUTER_BASE_URL ausente (defina no .env da raiz do projeto)"
 
 BASE_URL="${BASE_URL%/}"
 

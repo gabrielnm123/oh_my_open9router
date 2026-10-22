@@ -1,7 +1,6 @@
 # Segredos: NUNCA versionar (regra do AGENTS.md).
 .env
 *.env
-!tools/**/*.example
 *.key
 *.pem
 *.sqlite
@@ -12,3 +11,10 @@
 *.bak
 probe.jsonl
 *.log
+
+# O .env.example É versionado: e um modelo, nao contem segredo real.
+# As negacoes abaixo existem para sobrepor as regras acima, caso o padrao
+# *.env passe a casar com sufixos .example no futuro.
+!.env.example
+!**/.env.example
+!**/*.env.example
