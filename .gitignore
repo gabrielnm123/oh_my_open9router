@@ -1,0 +1,14 @@
+# Segredos: NUNCA versionar (regra do AGENTS.md).
+.env
+*.env
+!tools/**/*.example
+*.key
+*.pem
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Backups e artefatos de operacao.
+*.bak
+probe.jsonl
+*.log

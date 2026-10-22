@@ -70,6 +70,25 @@ print(t.get('$1') or '')
 " 2>/dev/null || echo ''
 }
 
+# ------------------------------------------------------- security assert ----
+# O tunel expoe o 9router para a internet. A rota /api/health e publica por
+# design (o AGENTS.md aceita 200 OU 401 nela), mas as rotas /v1/* DEVEM
+# exigir API key quando acessadas de fora. O middleware so dispensa a key
+# para peer loopback; via tunel o peer e externo, entao o esperado e 401.
+# Se vier 200, o catalogo de modelos esta exposto sem autenticacao.
+assert_tunnel_is_locked() {
+  local base="$1" code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${base}/v1/models" 2>/dev/null)" || true
+  code="${code:-000}"
+  if [[ "$code" == "401" || "$code" == "403" ]]; then
+    log "seguranca OK: ${base}/v1/models sem key -> HTTP ${code} (exige API key)"
+  elif [[ "$code" == "200" ]]; then
+    warn "ATENCAO: ${base}/v1/models sem key -> HTTP 200 (catalogo publico via tunel!)"
+  else
+    warn "ATENCAO: nao deu para validar a exigencia de API key (HTTP ${code})"
+  fi
+}
+
 # ---------------------------------------------------------------- status ----
 if [[ "$ACTION" == "--status" ]]; then
   TOKEN="$(cli_token_remote)"
@@ -122,13 +141,17 @@ while (( SECONDS < deadline )); do
   # o upstream direto e efemero. Testamos os dois.
   for candidate in "$url" "$direct_url"; do
     [[ -n "$candidate" ]] || continue
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${candidate}/api/health" 2>/dev/null || echo 000)"
+    # curl imprime o codigo mesmo em falha de rede (000); nao anexar um
+    # segundo "000" via `|| echo 000`, senao a comparacao quebra.
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${candidate}/api/health" 2>/dev/null)" || true
+    code="${code:-000}"
     last_code="$code"
     if [[ "$code" == "200" || "$code" == "401" ]]; then
       log "tunel NOVO: ${candidate}"
       log "resposta: HTTP ${code}  ->  tunel ativo"
       printf 'TUNNEL_URL=%s\n' "$candidate"
       [[ -n "$direct_url" ]] && printf 'TUNNEL_DIRECT_URL=%s\n' "$direct_url"
+      assert_tunnel_is_locked "$candidate"
       exit 0
     fi
     log "  ${candidate} -> HTTP ${code} (ainda subindo)"

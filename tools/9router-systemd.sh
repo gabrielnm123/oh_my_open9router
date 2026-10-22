@@ -66,21 +66,26 @@ set -uo pipefail
 D="/home/${VENICE_STACK_SSH_USER}/.9router"
 BASE="http://127.0.0.1:20128"
 
+# NOTA: este heredoc e QUOTED (<<'HELPER_EOF'), logo o texto abaixo e
+# gravado LITERALMENTE no helper. Nao escapar o '$' com barra invertida --
+# a barra viraria um caractere real e o bash quebraria com
+# "syntax error near unexpected token `('".
+#
 # 1) Aguarda o gateway aceitar conexoes (o ExecStartPost roda logo apos o
 #    start, entao o next-server pode ainda nao estar escutando).
-echo "[ensure-tunnel] $(date -Is) aguardando o gateway em \${BASE}"
-for _ in \$(seq 1 60); do
-  if curl -sf --max-time 3 -o /dev/null "\${BASE}/api/health"; then
+echo "[ensure-tunnel] $(date -Is) aguardando o gateway em ${BASE}"
+for _ in $(seq 1 60); do
+  if curl -sf --max-time 3 -o /dev/null "${BASE}/api/health"; then
     echo "[ensure-tunnel] gateway pronto"
     break
   fi
   sleep 2
 done
 
-MID="\$(cat "\${D}/machine-id" 2>/dev/null || true)"
-SEC="\$(cat "\${D}/auth/cli-secret" 2>/dev/null || true)"
-[[ -n "\${MID}" && -n "\${SEC}" ]] || { echo "[ensure-tunnel] sem machine-id/cli-secret"; exit 0; }
-TOKEN="\$(printf '%s' "\${MID}9r-cli-auth\${SEC}" | sha256sum | cut -c1-16)"
+MID="$(cat "${D}/machine-id" 2>/dev/null || true)"
+SEC="$(cat "${D}/auth/cli-secret" 2>/dev/null || true)"
+[[ -n "${MID}" && -n "${SEC}" ]] || { echo "[ensure-tunnel] sem machine-id/cli-secret"; exit 0; }
+TOKEN="$(printf '%s' "${MID}9r-cli-auth${SEC}" | sha256sum | cut -c1-16)"
 
 echo "[ensure-tunnel] $(date -Is) forcando POST /api/tunnel/enable"
 RESP="$(curl -s --max-time 150 -X POST -H "x-9r-cli-token: ${TOKEN}" "${BASE}/api/tunnel/enable" 2>&1)"
@@ -90,6 +95,16 @@ echo "[ensure-tunnel] resposta: ${RESP:0:300}"
 # (o relay abc-tunnel.us propaga em >60s). O estado real e o /api/tunnel/status.
 ST="$(curl -s --max-time 20 -H "x-9r-cli-token: ${TOKEN}" "${BASE}/api/tunnel/status" 2>&1)"
 echo "[ensure-tunnel] status: ${ST:0:400}"
+
+# 3) Aguarda o tunel ficar realmente "running" (max 90s).
+for _ in $(seq 1 30); do
+  ST="$(curl -s --max-time 20 -H "x-9r-cli-token: ${TOKEN}" "${BASE}/api/tunnel/status" 2>&1)"
+  case "${ST}" in
+    *'"running":true'*) echo "[ensure-tunnel] tunel ativo"; break ;;
+  esac
+  sleep 3
+done
+echo "[ensure-tunnel] status final: ${ST:0:400}"
 
 # Nao falha a unit: o tunel e acessorio, o gateway e o essencial.
 exit 0
