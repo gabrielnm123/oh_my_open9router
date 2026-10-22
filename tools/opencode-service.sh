@@ -47,7 +47,11 @@ TIMEOUT="${OPENCODE_SERVICE_TIMEOUT:-120}"
 PROBE_MODEL="${NINEROUTER_PROBE_MODEL:-9router/ag/claude-sonnet-4-6}"
 ACTION="${1:-ensure}"
 
-REQUIRED_VARS=(NINEROUTER_API_KEY OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
+# Variaveis que o daemon PRECISA ter para falar com o provider 9router.
+# NINEROUTER_BASE_URL entra na lista porque o opencode.json referencia
+# "{env:NINEROUTER_BASE_URL}" — se o daemon nascer sem ela, o provider
+# fica sem baseURL e toda chamada falha.
+REQUIRED_VARS=(NINEROUTER_API_KEY NINEROUTER_BASE_URL OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
 STATE_FILE="${HOME}/.local/state/opencode/service.json"
 
 log()  { printf '[opencode-service] %s\n' "$*"; }

@@ -216,6 +216,25 @@ ASKPASS
     ssh-add "${HOME}/.ssh/id_ed25519" </dev/null >/dev/null 2>&1
   fi
 fi
+
+# --- contexto do servidor e do provider (Fase 0.5) ---------------------------
+# Host, usuario e URL base sao lidos do arquivo canonico de segredos em tempo
+# de execucao. Nenhum valor literal aqui: o .env do projeto e a fonte da
+# verdade, e este arquivo e a copia canonica local dele.
+_vs_secrets="${HOME}/.config/venice-stack/9router.env"
+if [[ -r "$_vs_secrets" ]]; then
+  _vs_get() {
+    grep -m1 "^$1=" "$_vs_secrets" | cut -d= -f2- | tr -d "\r" | sed -E "s/^'//; s/'$//"
+  }
+  export VENICE_STACK_SSH_HOST="$(_vs_get VENICE_STACK_SSH_HOST)"
+  export VENICE_STACK_SSH_USER="$(_vs_get VENICE_STACK_SSH_USER)"
+  export NINEROUTER_BASE_URL="$(_vs_get NINEROUTER_BASE_URL)"
+  unset -f _vs_get
+fi
+unset _vs_secrets
+
+# --- provider 9router -------------------------------------------------------
+export NINEROUTER_API_KEY="<chave-de-cliente-do-9router>"
 ```
 
 E o arquivo canônico de segredos:
@@ -229,6 +248,10 @@ chmod 600 ~/.config/venice-stack/9router.env
 > O guard `VENICE_STACK_SSH_READY` é **por processo**: cada shell novo
 > reexecuta o bloco, e se o agente morreu ele é reerguido. É idempotente e
 > seguro para execução concorrente.
+>
+> O `~/.zshenv` fica **mode `600`** e nunca é versionado. Ele não guarda
+> host, usuário ou URL literais: lê tudo do arquivo canônico em tempo de
+> execução.
 
 Teste:
 
@@ -292,9 +315,9 @@ NINEROUTER_BASE_URL="https://${NINEROUTER_RELAY_HOST}/v1"
     "9router": {
       "name": "9Router",
       "package": "@opencode/ai/providers/openai-compatible",
-      "env": ["NINEROUTER_API_KEY"],
+      "env": ["NINEROUTER_API_KEY", "NINEROUTER_BASE_URL"],
       "settings": {
-        "baseURL": "https://<relay>/v1",
+        "baseURL": "{env:NINEROUTER_BASE_URL}",
         "apiKey": "{env:NINEROUTER_API_KEY}",
         "chunkTimeout": 600000,
         "headerTimeout": 600000
@@ -320,6 +343,11 @@ Pontos críticos:
 
 - `baseURL` **inclui `/v1`**. Sem ele, `/models` devolve `404`.
 - A chave vem por **`{env:NINEROUTER_API_KEY}`** — nunca literal no arquivo.
+- A URL também vem por **`{env:NINEROUTER_BASE_URL}`**: o `opencode.json`
+  fica **sem nenhum valor real** (nem host, nem chave). Quem carrega o valor
+  é o `~/.zshenv`, que o lê do arquivo canônico de segredos em tempo de
+  execução. Se preferir o literal (`https://<relay>/v1`), funciona igual —
+  mas o arquivo passa a carregar um identificador de infraestrutura.
 - `chunkTimeout` / `headerTimeout` altos: o relay propaga devagar e models
   "thinking" podem ficar minutos sem primeiro token.
 
@@ -359,6 +387,18 @@ zsh tools/opencode-service.sh --probe    # diagnostica + inferência real
 
 Ele usa `opencode service set env <KEY> <VALUE>`, para que o daemon nasça com
 as variáveis independente de quem o iniciou.
+
+Variáveis obrigatórias do daemon (lista `REQUIRED_VARS` do script):
+
+| Variável | Por quê |
+| :--- | :--- |
+| `NINEROUTER_API_KEY` | autenticação no `/v1` |
+| `NINEROUTER_BASE_URL` | o `opencode.json` referencia `{env:NINEROUTER_BASE_URL}` — sem ela no daemon, o provider fica **sem baseURL** e toda chamada falha |
+| `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` | habilita subagentes em background |
+
+> Depois de qualquer mudança no `opencode.json` ou no
+> `oh-my-opencode-slim.json`, reinicie: `opencode service restart`.
+> O daemon carrega a config na inicialização — editar o arquivo não basta.
 
 ---
 
