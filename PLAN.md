@@ -277,7 +277,10 @@ Local      ~/.zshenv com askpass + agente SSH resiliente
 2026-10-22 04:37  B4: --standalone (servidor privado) responde OK → configuração OK, env do processo que não
 2026-10-22 04:38  B4: tools/opencode-service.sh criado (reconcilia service.json env + sobe o daemon)
 2026-10-22 04:39  B4: opencode service set env <KEY> <VALUE> — env persistido no service.json (mode 600)
-2026-10-22 04:40  B4: daemon novo com env completo → opencode run responde OK ✅
+2026-10-22 04:40  B4: daemon novo (pid 8777 → 124894) com env completo → opencode run responde OK ✅
+2026-10-22 04:41  VERIFICAÇÃO FINAL: doctor ok · 103 modelos 9router/* · opencode run OK
+2026-10-22 04:42  VERIFICAÇÃO FINAL: tool calling real (shell → FASE2_TOOL_OK) pelo loop do agente ✅
+2026-10-22 04:43  tools/opencode-service.sh --check → HEALTHY, idempotente (exit 0)
 ```
 
 ### Estado do repositório
@@ -512,4 +515,9 @@ Provider   9router → @opencode/ai/providers/openai-compatible
            103 modelos declarados (todos com tools:true)
 Plugin     oh-my-opencode-slim v3.0.5 (plugin + tui + lsp + presets)
 Doctor     ok: true
+Daemon     opencode serve --service  pid 124894  http://127.0.0.1:49374
+           env: NINEROUTER_API_KEY + OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+           persistido em ~/.config/opencode/service.json (mode 600)
+Inferencia opencode run --model 9router/ag/claude-sonnet-4-6 → OK
+Tool call  opencode run → agente chamou a tool `shell` → FASE2_TOOL_OK ✅
 ```
