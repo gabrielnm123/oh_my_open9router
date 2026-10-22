@@ -1,7 +1,9 @@
-# PLAN.md — Execução da Fase 0 (9router + OpenCode)
+# PLAN.md — Execução das Fases 0, 1 e 2 (9router + OpenCode)
 
-**Servidor:** `${VENICE_STACK_SSH_HOST}` (`${VENICE_STACK_SSH_USER}`) · **Data:** 2026-10-22 (UTC) · **Fase:** 0 — Preparação, Descoberta, Hardening e Partida
+**Servidor:** `${VENICE_STACK_SSH_HOST}` (`${VENICE_STACK_SSH_USER}`) · **Data:** 2026-10-22 (UTC) · **Fases:** 0 — Preparação/Hardening · 1 — OpenCode + provider 9router · 2 — oh-my-opencode-slim
 **Status da Fase 0:** ✅ CONCLUÍDA E VERIFICADA
+**Status da Fase 1:** ✅ CONCLUÍDA E VERIFICADA
+**Status da Fase 2:** ✅ CONCLUÍDA E VERIFICADA
 
 ---
 
@@ -263,6 +265,19 @@ Local      ~/.zshenv com askpass + agente SSH resiliente
 2026-10-22 04:25  zsh tools/wait-tunnel.sh → relay público HTTP 200 + /v1/models 401  ✅
 2026-10-22 04:26  verificação externa completa (401s, 403 local-only, porta 20128 fechada)
 2026-10-22 04:27  ~/.config/venice-stack/9router.env gravado (600) + .gitignore criado
+2026-10-22 04:31  FASE 1: NINEROUTER_BASE_URL + NINEROUTER_API_KEY no ~/.zshenv (600); .zshrc intocado
+2026-10-22 04:32  FASE 1: validação do relay — streaming SSE ✅ + tool_call get_weather{"city":"Paris"} ✅
+2026-10-22 04:33  FASE 1: opencode.json — provider 9router (providers, V2) com 103 modelos do catálogo vivo
+2026-10-22 04:34  FASE 1: migração da chave depreciada `provider` → `providers` (schema V2)
+2026-10-22 04:34  FASE 2: install --no-tui --background-subagents=yes --background-subagents-target=~/.zshenv ✅
+2026-10-22 04:34  FASE 2: bloco background-subagents nas linhas 83-86 do ~/.zshenv; .zshrc NÃO tocado
+2026-10-22 04:35  FASE 2: doctor → ok: true (preset "openai") ✅
+2026-10-22 04:36  FASE 2: opencode models → 103 modelos 9router/* ✅
+2026-10-22 04:37  B4: daemon (pid 8777,started 23:49) sem NINEROUTER_API_KEY → opencode run falha
+2026-10-22 04:37  B4: --standalone (servidor privado) responde OK → configuração OK, env do processo que não
+2026-10-22 04:38  B4: tools/opencode-service.sh criado (reconcilia service.json env + sobe o daemon)
+2026-10-22 04:39  B4: opencode service set env <KEY> <VALUE> — env persistido no service.json (mode 600)
+2026-10-22 04:40  B4: daemon novo com env completo → opencode run responde OK ✅
 ```
 
 ### Estado do repositório
@@ -274,3 +289,227 @@ Local      ~/.zshenv com askpass + agente SSH resiliente
 | `PLAN.md` | este documento |
 | `.gitignore` | novo — impede versionar segredos/artefatos |
 | `AGENTS.md` | ⚠️ modificação **pré-existente** à esta sessão (reescrita condensada) — deixada sem commit para revisão do responsável |
+
+---
+
+## 11. Fase 1 — OpenCode apontado para o provider 9router
+
+### 11.1 Variáveis de ambiente — `~/.zshenv` (nunca `~/.zshrc`)
+
+A regra do AGENTS.md é estrutural, não cosmeticamente: o OpenCode é executado como
+`zsh -c` (não-interativo), e `~/.zshrc` **só** é lido por shells interativos. Um
+export em `.zshrc` seria invisível para o servidor do OpenCode.
+
+| Variável | Valor | Origem |
+|---|---|---|
+| `NINEROUTER_BASE_URL` | `https://${NINEROUTER_RELAY_HOST}/v1` | relay **estável** do túnel nativo |
+| `NINEROUTER_API_KEY` | chave de 35 chars | `~/.config/venice-stack/9router.env` (mode 600) |
+
+> O relay `abc-tunnel.us` é o endereço duradouro. A URL `trycloudflare` que o
+> 9router imprime a cada `POST /api/tunnel/enable` **muda** a cada enable e
+> nunca deve ser gravada em config.
+
+Verificações:
+
+```
+zsh -c 'echo $NINEROUTER_BASE_URL'      → https://${NINEROUTER_RELAY_HOST}/v1
+zsh -c 'echo ${#NINEROUTER_API_KEY}'    → 35
+grep -c NINEROUTER ~/.zshrc             → 0        (mtime 2025-03-20, intocado)
+stat -c %a ~/.zshenv                    → 600
+```
+
+### 11.2 `~/.config/opencode/opencode.json` (mode 600)
+
+| Campo | Valor | Motivo |
+|---|---|---|
+| `providers` (plural) | objeto de providers | chave correta no schema V2 |
+| `providers.9router.package` | `@opencode/ai/providers/openai-compatible` | runtime OpenAI-compatible |
+| `providers.9router.settings.baseURL` | `https://${NINEROUTER_RELAY_HOST}/v1` | relay público |
+| `providers.9router.settings.apiKey` | `{env:NINEROUTER_API_KEY}` | **segredo só no `~/.zshenv`** |
+| `providers.9router.env` | `["NINEROUTER_API_KEY"]` | fallback de resolução do credential |
+| `providers.9router.models` | **103** modelos | gerados do catálogo vivo `/v1/models` |
+| `settings.chunkTimeout` / `headerTimeout` | `600000` ms | relays LLM demoram; o default (5s) corta o stream |
+| `model` (raiz) | `9router/ag/claude-sonnet-4-6` | default verificado com tool calling |
+
+Os 103 modelos foram **gerados programaticamente** do catálogo vivo (via relay,
+com a API key), com `limit` (context/output) e `capabilities` reais — sem
+digitação manual, sem erro de transcrição. Todos os 103 declaram `tools: true`.
+Chaves de topo do arquivo: `$schema`, `model`, `providers`, `plugin`, `lsp`.
+
+### 11.3 Validação do endpoint antes de configurar (streaming + tools)
+
+Feita direto contra o relay público, com `stream:true` e uma função `get_weather`:
+
+```
+tool_calls[0].function.name      → get_weather
+tool_calls[0].function.arguments → {"city":"Paris"}
+finish_reason                    → tool_calls
+```
+
+Sem isso, uma configuração de provider pode parecer correta e falhar só quando
+o agente tenta usar uma ferramenta.
+
+### 11.4 Migração `provider` → `providers` (V2)
+
+O arquivo pré-existente continha `{"provider": {}}`. O schema V2
+(`https://opencode.ai/config.json`) marca `provider` (singular) como
+`deprecated: true` e `providers` (plural) como o campo correto:
+
+```
+root keys: ..., plugin, plugins, provider, providers, ...
+--- provider  → deprecated: True
+--- providers → deprecated: None
+```
+
+A chave depreciada foi **removida** e o conteúdo migrado para `providers`.
+
+---
+
+## 12. Fase 2 — `oh-my-opencode-slim`
+
+### 12.1 Comando executado
+
+```bash
+npx oh-my-opencode-slim@latest install \
+  --no-tui \
+  --background-subagents=yes \
+  --background-subagents-target=${HOME}/.zshenv
+```
+
+`--background-subagents-target` **não** está no comando do AGENTS.md — foi
+adicionado por causa da divergência **D7** (ver §13). O instalador, sem esse
+flag, escreve em `~/.zshrc` (o próprio instalador sugere `source ~/.zshrc` no
+passo 4 do "Next steps"), o que violaria a regra do próprio AGENTS.md.
+
+### 12.2 O que o instalador escreveu
+
+| Arquivo | Conteúdo |
+|---|---|
+| `~/.config/opencode/opencode.json` | `plugin: ["oh-my-opencode-slim"]` + `lsp: true` (merge preservou `providers`) |
+| `~/.config/opencode/tui.json` | `plugin: ["oh-my-opencode-slim"]` (badge de versão no TUI) |
+| `~/.config/opencode/cli.json` | settings de CLI |
+| `~/.config/opencode/oh-my-opencode-slim.json` | `preset: "openai"` + 2 presets gerados |
+| `~/.zshenv` (linhas 83–86) | `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` + `OPENCODE_ENABLE_EXA=1` |
+
+O merge foi verificado: as chaves `providers` (escritas antes da instalação) e
+`plugin`/`lsp` (escritas pelo instalador) coexistem no mesmo arquivo.
+
+### 12.3 `doctor`
+
+```
+$ npx oh-my-opencode-slim@latest doctor
+Project: ${HOME}/wp/venice-stack
+[user] ${HOME}/.config/opencode/oh-my-opencode-slim.json ✓
+[project] No config file found
+[preset] openai ✓
+
+$ npx oh-my-opencode-slim@latest doctor --json
+{ "ok": true, "configs": [...], "presetCheck": { "preset": "openai", "ok": true } }
+```
+
+> **Limite do `doctor`** (divergência **D9**): ele valida apenas *presença* do
+> arquivo de config e do preset. Ele **não** checa se o provider resolve, se a
+> API key está no ambiente do processo, nem se o modelo responde. Por isso a
+> Fase 1 foi validada separadamente (seção 13).
+
+---
+
+## 13. Defeito B4 — o serviço em background do OpenCode herda env obsoleto
+
+### 13.1 Diagnóstico
+
+O OpenCode V2 é cliente-servidor: um daemon compartilhado (`opencode serve
+--service`) responde por sessão, plugins e providers. Esse daemon é
+**daemonizado** (`PPID=1`) e **herda o ambiente do processo que o iniciou** —
+que é congelado no `exec`.
+
+```
+pid 8777  ppid 1     started Wed Oct 21 23:49:22  opencode.exe serve --service
+pid 118637 ppid 103509 started Thu Oct 22 01:31:21  opencode   (TUI, OPENCODE_CALLER=vscode)
+~/.zshenv modificado em: 2026-10-22 01:34:28
+```
+
+O daemon nasceu às **23:49**, quase duas horas **antes** do `~/.zshenv` receber
+o export. Consequência observada:
+
+```
+$ opencode run --model 9router/ag/claude-sonnet-4-6 "Responda APENAS: OK"
+> orchestrator · ag/claude-sonnet-4-6
+Error: API key required for remote API access
+```
+
+O mesmo comando com um servidor privado (`--standalone`, que **não** usa o
+daemon) responde normalmente — o que isola a causa no ambiente do processo, e
+não na configuração:
+
+```
+$ opencode run --standalone --model 9router/ag/claude-sonnet-4-6 "..."
+> orchestrator · ag/claude-sonnet-4-6
+OK
+```
+
+### 13.2 Correção — persistir o env **no próprio serviço**
+
+Reiniciar o daemon a partir de um shell com o `~/.zshenv` carregado resolveria
+**uma vez**, mas não é robusto: o daemon pode ser iniciado por qualquer
+processo — e observamos a extensão do VS Code (`OPENCODE_CALLER=vscode`) que
+o inicia com env mínimo. O próprio binário do OpenCode expõe a solução certa:
+
+```
+opencode service set env <KEY> <VALUE>     # persiste no service.json (mode 600)
+opencode service get env <KEY>             # leitura
+```
+
+O `set env` para o daemon atual; o start seguinte o recolhe com essas
+variáveis, **independente de quem o iniciou**. O `~/.zshenv` continua sendo a
+fonte canônica (regra do AGENTS.md); o `~/.config/opencode/service.json`
+(mode 600, fora do repo) é a cópia de trabalho do daemon.
+
+Para tornar isso **idempotente e auto-healing** (regra do AGENTS.md), foi criado
+`tools/opencode-service.sh`, que detecta o daemon com env obsoleto, reconcilia
+o `service.json` com o `~/.zshenv` e sobe o daemon:
+
+```bash
+zsh tools/opencode-service.sh          # reconcilia + garante env + service healthy
+zsh tools/opencode-service.sh --check  # só diagnostica (exit != 0 se unhealthy)
+zsh tools/opencode-service.sh --probe  # diagnostica + inferência real no provider
+```
+
+> ⚠️ O daemon herda o ambiente de quem o iniciou. Se ele for iniciado por um
+> processo **sem** `~/.zshenv` no ambiente (ex.: a extensão do VS Code, que
+> observamos com `OPENCODE_CALLER=vscode` e env mínimo), ele nasce sem a chave.
+> Rodar o OpenCode a partir de um terminal `zsh` resolve; o
+> `tools/opencode-service.sh` é a rede de segurança.
+
+---
+
+## 14. Divergências D7–D9 (Fases 1 e 2)
+
+| ID | AGENTS.md / docs dizem | Realidade | Tratamento |
+|---|---|---|---|
+| **D7** | Fase 2: `install --no-tui --background-subagents=yes` | O instalador escreve o bloco de env em **`~/.zshrc`** por padrão (e sugere `source ~/.zshrc`), contrariando a regra do **próprio** AGENTS.md ("exports no `.zshenv`") | Adicionado `--background-subagents-target=${HOME}/.zshenv`. O bloco foi confirmado nas linhas 83–86 do `.zshenv`; `.zshrc` ficou intocado |
+| **D8** | O plano cita `~/.config/opencode/opencode.json` sem especificar a forma do provider | O arquivo pré-existente usava `provider` (singular), **depreciado** no schema V2; a forma correta é `providers` (plural) | Migrado para `providers`; a chave depreciada foi removida |
+| **D9** | Fase 2: "rodar o `doctor` para validar" | O `doctor` valida só *presença de config* e *preset*; não valida provider, credencial nem resposta do modelo | `doctor` executado (`ok: true`) **e** validação real acrescentada: streaming + tool calling via relay, `opencode models` (103 modelos), `opencode run` real |
+
+---
+
+## 15. Estado final (Fases 0–2)
+
+```
+Servidor   9router.service  enabled / active   (NRestarts=0)
+Túnel      running=true   https://${NINEROUTER_RELAY_HOST}
+Auth       API key obrigatória em /v1/* (externo) · admin com senha rotacionada
+Rede       20128 em 127.0.0.1 apenas · acesso externo só pelo túnel
+Backups    .env / jwt-secret / cli-secret / data.sqlite  (20261022-042023)
+Segredos   ~/.config/venice-stack/9router.env  (chmod 600, fora do repo)
+
+Local      ~/.zshenv (600)  askpass + agente SSH + NINEROUTER_* + OPENCODE_*
+           ~/.zshrc  INTOCADO (mtime 2025-03-20, 0 ocorrências)
+           ~/.config/opencode/opencode.json (600)  providers.9router + plugin + lsp
+           ~/.config/opencode/oh-my-opencode-slim.json  preset "openai"
+Provider   9router → @opencode/ai/providers/openai-compatible
+           baseURL https://${NINEROUTER_RELAY_HOST}/v1 · apiKey {env:NINEROUTER_API_KEY}
+           103 modelos declarados (todos com tools:true)
+Plugin     oh-my-opencode-slim v3.0.5 (plugin + tui + lsp + presets)
+Doctor     ok: true
+```
