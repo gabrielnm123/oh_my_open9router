@@ -66,10 +66,21 @@ set -uo pipefail
 D="/home/${VENICE_STACK_SSH_USER}/.9router"
 BASE="http://127.0.0.1:20128"
 
-MID="$(cat "${D}/machine-id" 2>/dev/null || true)"
-SEC="$(cat "${D}/auth/cli-secret" 2>/dev/null || true)"
-[[ -n "${MID}" && -n "${SEC}" ]] || { echo "[ensure-tunnel] sem machine-id/cli-secret"; exit 0; }
-TOKEN="$(printf '%s' "${MID}9r-cli-auth${SEC}" | sha256sum | cut -c1-16)"
+# 1) Aguarda o gateway aceitar conexoes (o ExecStartPost roda logo apos o
+#    start, entao o next-server pode ainda nao estar escutando).
+echo "[ensure-tunnel] $(date -Is) aguardando o gateway em \${BASE}"
+for _ in \$(seq 1 60); do
+  if curl -sf --max-time 3 -o /dev/null "\${BASE}/api/health"; then
+    echo "[ensure-tunnel] gateway pronto"
+    break
+  fi
+  sleep 2
+done
+
+MID="\$(cat "\${D}/machine-id" 2>/dev/null || true)"
+SEC="\$(cat "\${D}/auth/cli-secret" 2>/dev/null || true)"
+[[ -n "\${MID}" && -n "\${SEC}" ]] || { echo "[ensure-tunnel] sem machine-id/cli-secret"; exit 0; }
+TOKEN="\$(printf '%s' "\${MID}9r-cli-auth\${SEC}" | sha256sum | cut -c1-16)"
 
 echo "[ensure-tunnel] $(date -Is) forcando POST /api/tunnel/enable"
 RESP="$(curl -s --max-time 150 -X POST -H "x-9r-cli-token: ${TOKEN}" "${BASE}/api/tunnel/enable" 2>&1)"
