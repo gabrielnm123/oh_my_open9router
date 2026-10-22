@@ -1,9 +1,12 @@
-# PLAN.md — Execução das Fases 0, 1 e 2 (9router + OpenCode)
+# PLAN.md — Execução das Fases 0 a 5 (9router + OpenCode)
 
-**Servidor:** `${VENICE_STACK_SSH_HOST}` (`${VENICE_STACK_SSH_USER}`) · **Data:** 2026-10-22 (UTC) · **Fases:** 0 — Preparação/Hardening · 1 — OpenCode + provider 9router · 2 — oh-my-opencode-slim
+**Servidor:** `${VENICE_STACK_SSH_HOST}` (`${VENICE_STACK_SSH_USER}`) · **Data:** 2026-10-22 (UTC) · **Fases:** 0 — Preparação/Hardening · 1 — OpenCode + provider 9router · 2 — oh-my-opencode-slim · 3 — Sondagem de modelos · 4 — Atribuição aos agentes · 5 — Verificação final
 **Status da Fase 0:** ✅ CONCLUÍDA E VERIFICADA
 **Status da Fase 1:** ✅ CONCLUÍDA E VERIFICADA
 **Status da Fase 2:** ✅ CONCLUÍDA E VERIFICADA
+**Status da Fase 3:** ✅ CONCLUÍDA E VERIFICADA
+**Status da Fase 4:** ✅ CONCLUÍDA E VERIFICADA
+**Status da Fase 5:** ✅ CONCLUÍDA E VERIFICADA
 
 ---
 
@@ -520,4 +523,282 @@ Daemon     opencode serve --service  pid 124894  http://127.0.0.1:49374
            persistido em ~/.config/opencode/service.json (mode 600)
 Inferencia opencode run --model 9router/ag/claude-sonnet-4-6 → OK
 Tool call  opencode run → agente chamou a tool `shell` → FASE2_TOOL_OK ✅
+```
+
+---
+
+## 16. Fase 3 — Sondagem de modelos (`tools/probe-models.sh`)
+
+### 16.1 O script
+
+Local, em `zsh`, mode 755, idempotente. Mede **latência** (ttfb e total), **código
+HTTP** e **suporte a tool calling** (função `get_weather`) de cada modelo do
+catálogo, gravando **uma linha JSON por modelo** em `probe.jsonl` (JSON Lines).
+
+```
+tools/probe-models.sh [--concurrency N] [--timeout S] [--repeat N]
+                       [--out ARQUIVO] [--models LISTA] [--filter PADRÃO] [--append]
+```
+
+| Variável | Default | Papel |
+|---|---|---|
+| `NINEROUTER_BASE_URL` | `https://${NINEROUTER_RELAY_HOST}/v1` | relay público (**nunca** a porta 20128) |
+| `NINEROUTER_API_KEY` | fallback `~/.config/venice-stack/9router.env` | credencial |
+| `PROBE_CONCURRENCY` / `PROBE_TIMEOUT` / `PROBE_REPEAT` | 4 / 120 / 1 | ritmo da sonda |
+
+Decisões de projeto:
+
+- **`tool_choice: "auto"`**, conforme o AGENTS.md. Se o gateway responder
+  HTTP 400 citando `tool_choice`, o script refaz a requisição **sem** ele e
+  marca `tool_choice_dropped: true` — o que se mede é o *tool calling*, não o
+  parâmetro.
+- Cada worker grava num arquivo próprio em `$WORKDIR`; a concatenação final é
+  feita em ordem de catálogo. Isso elimina interleaving de escrita entre
+  processos paralelos.
+- O `probe.jsonl` já está no `.gitignore` (regra de segredo/artefato).
+
+### 16.2 Execução da sonda completa
+
+```
+zsh tools/probe-models.sh --concurrency 4 --timeout 120 --out probe.jsonl
+```
+
+103 modelos · latência mediana dos aprovados **2859 ms** · relatório tabular em
+`/tmp/opencode/probe-full.log`.
+
+| Métrica | Valor |
+|---|---|
+| Modelos sondados | 103 |
+| **HTTP 200 + tool calling OK** | **36 (35,0 %)** |
+| HTTP 200 (sem tool calling) | 0 — quem respondeu 200, respondeu com tool call |
+| Latência mediana dos aprovados | 2859 ms (faixa 754 ms – 12,3 s) |
+
+### 16.3 Cobertura por família
+
+| Família | Prontos | Total | Leitura |
+|---|---|---|---|
+| `ag` (antigravity) | 7 | 25 | Claude 4.6 + Gemini 3.8 Flash + GPT-OSS |
+| `cx` (codex) | 10 | 19 | GPT-5.6 Luna/Terra, GPT-6 Luna, auto-review, reserve |
+| `gh` (github copilot) | 13 | 28 | GPT-4o/4.1/5.4-nano — **lentos** (5–12 s) |
+| `oc` (free pool) | 6 | 12 | Mimo, Nemotron, DeepSeek, Big Pickle |
+| `gc` (gemini-cli) | **0** | 7 | **morto** — cota/quota upstream (403) |
+| `kimi` | **0** | 10 | **sem assinatura** (403 "current subscription does not…") |
+| `mmf` | 0 | 1 | `mimo-auto` → 400 upstream |
+| `teste` | 0 | 1 | `model_not_supported` (integrator `vscode-chat`) |
+
+### 16.4 Taxonomia das 67 falhas
+
+| Padrão | Qtd | Modelos (exemplos) | Causa real |
+|---|---|---|---|
+| `404 Requested entity was not found` | 18 | `ag/claude-opus-5-5*`, `ag/claude-sonnet-5-5*`, `ag/gemini-3.7-*`, `ag/gemini-4-argon-high` | **Não existem upstream** — o catálogo do 9router os anuncia, mas o provedor não os tem |
+| `model_not_supported` / `not available for integrator` | 16 | `gh/claude-haiku-4.5`, `gh/gpt-6-luna`, `gh/kimi-k3-*`, `teste` | Recusados pelo provedor de destino |
+| `403 (reset after …)` | 7 | `gc/*` | **Cota/quota** do gemini-cli (já observada na Fase 2) |
+| `model is not supported` (codex) | 5 | `cx/gpt-6-astra*`, `cx/gpt-6-sol*`, `cx/gpt-5.6-sol*` | O codex não expõe esses nomes |
+| `410 ModelDeprecated` | 2 | `oc/muse-spark-1.2/1.3-contributor-free` | Modelo aposentado |
+| `403` (kimi) | 8 | `kimi/*` | Plano kimi sem assinatura ativa |
+
+> **Conclusão central:** o catálogo de 103 modelos é **publicitário**, não
+> operacional. Só 36 IDs respondem de fato. Toda atribuição de modelo nas
+> fases seguintes **tem** que vir da sonda, não do catálogo.
+
+### 16.5 Modelos aprovados (HTTP 200 + tool calling)
+
+Os 11 que entraram na Fase 4, com latência medida:
+
+| Modelo | Latência | ctx | Visão | Reasoning |
+|---|---|---|---|---|
+| `ag/claude-sonnet-4-6` | 1873 ms | 1 000 000 | ✅ | ✅ |
+| `ag/claude-opus-4-6-thinking` | 2859 ms | 200 000 | ✅ | ✅ |
+| `ag/gpt-oss-120b-medium` | 1063 ms | 128 000 | — | ✅ |
+| `ag/gemini-3.8-flash` | 3878 ms | 1 048 576 | ✅ (+áudio/vídeo) | ✅ |
+| `cx/gpt-5.6-luna` | 1507 ms | 272 000 | ✅ | ✅ |
+| `cx/gpt-6-luna` | 2774 ms | 272 000 | ✅ | ✅ |
+| `cx/gpt-5.6-terra` | 2749 ms | 272 000 | ✅ | ✅ |
+| `oc/deepseek-v4.1-flash-free` | 1474 ms | 1 000 000 | ✅ | ✅ |
+| `oc/nemotron-3.5-lightning-free` | 947 ms | 128 000 | — | ✅ |
+| `oc/mimo-v2.6-flash-free` | 2846 ms | 1 048 576 | ✅ (+áudio/vídeo) | ✅ |
+| `oc/nemotron-3.5-super-vl-free` | 2609 ms | 128 000 | ✅ | ✅ |
+
+---
+
+## 17. Fase 4 — Atribuição dos modelos aos papéis
+
+### 17.1 Semântica do plugin (confirmada no schema, não na intuição)
+
+Lida a partir do pacote instalado (`oh-my-opencode-slim` 3.0.5):
+`oh-my-opencode-slim.schema.json` + `dist/config/constants.d.ts` +
+`docs/council.md` + `docs/configuration.md`.
+
+| Fato | Origem |
+|---|---|
+| `ALL_AGENT_NAMES = [orchestrator, explorer, oracle, designer, fixer, observer, council, councillor]` | `dist/config/constants.d.ts` |
+| Formato **plano** `presets.<preset>.<role>` é válido (`oneOf` com 3 variantes; a flat não tem `required`) | schema JSON |
+| `disabled_agents` default `["observer"]` — para habilitar o Observer: `disabled_agents: []` **+** modelo com visão | schema + README |
+| `image_routing`: omitido resolve para `"auto"` se o Observer estiver habilitado, senão `"direct"` | `docs/configuration.md` |
+| O **sintetizador** do council é um role normal: `presets.<preset>.council.model` | `docs/council.md` |
+| Os **assentos** do council são separados: `council.presets.<preset>.<assento>.model` | `docs/council.md` + `src/config/council-schema.ts` |
+| `model` de agente/assento aceita **string ou array** = cadeia de fallback ordenada | schema |
+| `variant` = "reasoning effort: low/medium/high/max (provider-specific)" | `docs/configuration.md` |
+| `fallback.maxRetries` (default 3) + `fallback.enabled` (default true) = switch para o próximo modelo da cadeia | `docs/configuration.md` |
+| O assento `master` foi **removido** do schema | `src/config/council-schema.ts` |
+
+### 17.2 Atribuição
+
+`~/.config/opencode/oh-my-opencode-slim.json` → preset ativo **`9router`**
+(antes: `openai`, que apontava para `openai/gpt-6-*` e `opencode-go/*` —
+modelos **inexistentes** nesta conta).
+
+| Papel | Primário | Fallback | Por quê |
+|---|---|---|---|
+| `orchestrator` | `ag/claude-sonnet-4-6` | `cx/gpt-5.6-luna` → `ag/gpt-oss-120b-medium` | Cérebro: 1,9 s, 1 M de ctx, visão+reasoning, e já é o `model` raiz do `opencode.json` |
+| `oracle` | `ag/claude-opus-4-6-thinking` | `cx/gpt-6-luna` → `ag/gemini-3.8-flash` | **Único Opus** aprovado — melhor raciocínio medido; é consultivo, então a latência não pesa |
+| `explorer` | `ag/gpt-oss-120b-medium` | `oc/nemotron-3.5-lightning-free` → `cx/gpt-5.6-luna` | Busca é o gargalo: 1,06 s, open-weights afinado para código |
+| `designer` | `cx/gpt-5.6-luna` | `ag/gemini-3.8-flash` → `oc/deepseek-v4.1-flash-free` | Iteração de UI precisa de visão + resposta rápida (1,5 s) |
+| `fixer` | `cx/gpt-6-luna` | `ag/claude-sonnet-4-6` → `ag/gpt-oss-120b-medium` | Cavalo de batalha de implementação: reasoning + visão, 272 k de ctx |
+| `observer` | `ag/gemini-3.8-flash` | `oc/mimo-v2.6-flash-free` → `oc/nemotron-3.5-super-vl-free` | Leitor multimodal dedicado: `input` = text, **image, audio, video**, 1,048 M de ctx |
+| `council` | `ag/claude-sonnet-4-6` | `cx/gpt-5.6-terra` → `ag/gemini-3.8-flash` | **Sintetizador**: precisa de 1 M de ctx para fundir as respostas dos 4 assentos |
+
+Skills: `orchestrator` → `["*"]`; `oracle` → `["simplify"]`; demais → `[]`
+(o council não tem tools).
+
+### 17.3 Assentos do council (diversidade de família é o ponto)
+
+4 assentos, um por família de modelo — Claude, GPT, DeepSeek, Gemini:
+
+| Assento | Modelo | Prompt de papel |
+|---|---|---|
+| `architect` | `ag/claude-opus-4-6-thinking` | manutenibilidade, fronteiras, desenho de longo prazo |
+| `reviewer` | `cx/gpt-5.6-luna` | bugs, casos de borda, modos de falha |
+| `optimiser` | `oc/deepseek-v4.1-flash-free` | performance, latência, uso de recursos |
+| `visual` | `ag/gemini-3.8-flash` | correção de UI/UX, acessibilidade, detalhe visual |
+
+`council.default_preset: "default"`.
+
+### 17.4 Decisões de robustez
+
+- **Cadeias de fallback em todos os papéis.** A Fase 3 provou que o 9router é
+  instável por naturezas diferentes (404 de catálogo, 403 de cota, 503 de
+  upstream, timeout). O `model` como array é a cadeia de failover nativa do
+  plugin (`fallback.maxRetries` = 3, compartilhado na cadeia). Um único modelo
+  por papel transformaria qualquer 503 upstream em turno perdido.
+- **Nenhum `variant` declarado.** O catálogo do 9router **não expõe níveis de
+  reasoning effort**; o `variant` seria um valor inventado enviado ao
+  upstream. Onde o nível importa, ele já está no ID do modelo
+  (`ag/gemini-3.8-flash-high` vs `-medium` vs `-low`).
+- **`disabled_agents: []`** para habilitar o Observer, e **`image_routing: "auto"`**.
+- **Presets antigos removidos** (`openai`, `opencode-go`): apontavam para modelos
+  inexistentes nesta conta e ficariam quebrados se alguém os selecionasse.
+- **Backup** de `opencode.json` e `oh-my-opencode-slim.json` em
+  `~/.config/opencode/backups/*.20261022-091707.bak` (mode 600) antes da
+  escrita.
+
+---
+
+## 18. Fase 5 — Verificação final
+
+### 18.1 Verificações exigidas
+
+```
+npx oh-my-opencode-slim@latest doctor
+opencode models
+```
+
+| Verificação | Resultado |
+|---|---|
+| `doctor` (texto) | `[preset] 9router ✓` · exit 0 |
+| `doctor --json` | `{"ok": true, …, "presetCheck": {"preset": "9router", "ok": true}}` |
+| `opencode models` | **113** modelos: 103 do `9router` + 10 do `opencode` |
+| Modelos atribuídos presentes em `opencode models` | **11 / 11** ✅ |
+| JSON Schema do plugin (draft 2020-12) sobre o config | **VÁLIDO** |
+| Validação estrutural própria (roles, assentos, refs, visão do observer) | **OK** |
+
+### 18.2 Verificação funcional real (não só configuração)
+
+Cada papel foi exercitado de verdade e o **modelo efetivo de cada sessão** foi
+lido de volta pela API (`GET /api/session/{id}/message`):
+
+| Agente | Modelo efetivamente usado | Teste |
+|---|---|---|
+| `orchestrator` | `9router/ag/claude-sonnet-4-6` | turno real → `ORCH_OK` |
+| `explorer` | `9router/ag/gpt-oss-120b-medium` | delegação: listar `.sh` em `tools/` → `EXPLORER_OK` |
+| `oracle` | `9router/ag/claude-opus-4-6-thinking` | sessão registrada pela delegação do council |
+| `designer` | `9router/cx/gpt-5.6-luna` | proposta de paleta + hierarquia de layout |
+| `fixer` | `9router/cx/gpt-6-luna` | criou script, aplicou `chmod +x`, validou com `bash -n` ✅ |
+| `observer` | `9router/ag/gemini-3.8-flash` | **leu de verdade um PNG** e devolveu `OBSERVER_42_OK` |
+| `council` | `9router/ag/claude-sonnet-4-6` | síntese final do conselho |
+| `councillor-architect` | `9router/ag/claude-opus-4-6-thinking` | assento dispatched |
+| `councillor-reviewer` | `9router/cx/gpt-5.6-luna` | assento dispatched |
+| `councillor-optimiser` | `9router/oc/deepseek-v4.1-flash-free` | assento dispatched |
+| `councillor-visual` | `9router/ag/gemini-3.8-flash` | assento dispatched |
+
+**Council end-to-end:** as 4 assentos foram despachados em paralelo
+(`✓ Council seat … [Councillor-Architect|Reviewer|Optimiser|Visual Agent]`) e o
+sintetizador respondeu com **consenso unânime**.
+
+### 18.3 Estado do serviço
+
+```
+Daemon     opencode serve --service  pid 41619  http://127.0.0.1:49374
+           env: NINEROUTER_API_KEY + OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+Túnel      running=true   https://${NINEROUTER_RELAY_HOST}
+Auth       /v1/models sem key → HTTP 401 ✅
+```
+
+---
+
+## 19. Divergências D10–D12 (Fases 3–5)
+
+| ID | O que se esperava | Realidade | Tratamento |
+|---|---|---|---|
+| **D10** | Editar `oh-my-opencode-slim.json` e o efeito valer na hora | O **daemon serve config obsoleta**: o roster de subagentes continuava sem `observer` e sem `council` até o serviço ser reiniciado | `opencode service restart` após editar o config do plugin. Diagnóstico: o roster vinha do preset antigo (`openai`, sem `council`) — leitura de `dist/config/constants.d.ts` + do `docs/configuration.md` confirmou que o preset ativo é re-resolvido no start do servidor |
+| **D11** | `opencode run --file img.png` anexa a imagem | O `--file` **não** anexa arquivo binário: a mensagem chegou sem parte de arquivo (`--format json` mostrou só `part=text`) | O Observer consome imagens pela **tool `read`** (não por anexo de mensagem). O teste correto é delegar ao observer com um caminho **dentro do projeto** — fora dele o OpenCode pede permissão `external_directory` e o `run` auto-rejeita |
+| **D12** | `opencode run --session <nome>` cria a sessão | O flag exige um ID no formato `ses_…` (`Expected a string starting with "ses"`) | Usar `--continue` para o segundo turno da mesma sessão |
+
+### Observações para quem for mexer no `9router` depois
+
+1. **Não confie no catálogo.** 67 dos 103 modelos são catálogo morto — 18 nem
+   existem upstream, 16 são recusados pelo provedor, 15 estão sem cota ou
+   assinatura. Re-sonda (`tools/probe-models.sh`) antes de trocar qualquer
+   atribuição.
+2. **`gc/*` e `kimi/*` estão mortos** por cota/assinatura — foram confirmados
+   também na Fase 2. Não usar em nenhum papel.
+3. **O `gh/*` (copilot) é lento** (5–12 s por chamada). Ruim para papéis de
+   latência; serve como último recurso.
+4. **A sonda é barata e rápida** (~3 min para 103 modelos com `conc=4`) —
+   reexecute-a após qualquer mudança no servidor ou nas assinaturas.
+
+---
+
+## 20. Estado final (Fases 0–5)
+
+```
+Servidor   9router.service  enabled / active   (NRestarts=0)
+Túnel      running=true   https://${NINEROUTER_RELAY_HOST}
+Auth       API key obrigatória em /v1/* (externo) · admin com senha rotacionada
+Rede       20128 em 127.0.0.1 apenas · acesso externo só pelo túnel
+Backups    .env / jwt-secret / cli-secret / data.sqlite  (20261022-042023)
+           opencode.json + oh-my-opencode-slim.json     (20261022-091707)
+Segredos   ~/.config/venice-stack/9router.env  (chmod 600, fora do repo)
+
+Local      ~/.zshenv (600)  askpass + agente SSH + NINEROUTER_* + OPENCODE_*
+           ~/.zshrc  INTOCADO
+           ~/.config/opencode/opencode.json (600)  providers.9router (103 modelos)
+           ~/.config/opencode/oh-my-opencode-slim.json  preset "9router"  (7 papéis + 4 assentos)
+Sonda      tools/probe-models.sh (zsh, 755)  →  probe.jsonl (103 linhas, gitignored)
+           36/103 aprovados (35,0 %)  ·  latência mediana 2859 ms
+Plugin     oh-my-opencode-slim v3.0.5
+Doctor     ok: true
+Daemon     opencode serve --service  pid 41619  http://127.0.0.1:49374
+Inferencia orchestrator/explorer/designer/fixer/observer/council + 4 assentos
+           todos verificados com o modelo efetivo lido da API ✅
+```
+
+### Artefato do repositório
+
+```
+tools/probe-models.sh   (novo, 755)  — sonda de latência/HTTP/tool calling
+tools/opencode-service.sh            — rede de segurança do env do daemon
+tools/wait-tunnel.sh                  — garante o túnel nativo
+PLAN.md                              — este registro
+probe.jsonl                          — saída da sonda (gitignored)
 ```
