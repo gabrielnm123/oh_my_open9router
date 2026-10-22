@@ -770,6 +770,7 @@ Auth       /v1/models sem key → HTTP 401 ✅
 | **D10** | Editar `oh-my-opencode-slim.json` e o efeito valer na hora | O **daemon serve config obsoleta**: o roster de subagentes continuava sem `observer` e sem `council` até o serviço ser reiniciado | `opencode service restart` após editar o config do plugin. Diagnóstico: o roster vinha do preset antigo (`openai`, sem `council`) — leitura de `dist/config/constants.d.ts` + do `docs/configuration.md` confirmou que o preset ativo é re-resolvido no start do servidor |
 | **D11** | `opencode run --file img.png` anexa a imagem | O `--file` **não** anexa arquivo binário: a mensagem chegou sem parte de arquivo (`--format json` mostrou só `part=text`) | O Observer consome imagens pela **tool `read`** (não por anexo de mensagem). O teste correto é delegar ao observer com um caminho **dentro do projeto** — fora dele o OpenCode pede permissão `external_directory` e o `run` auto-rejeita |
 | **D12** | `opencode run --session <nome>` cria a sessão | O flag exige um ID no formato `ses_…` (`Expected a string starting with "ses"`) | Usar `--continue` para o segundo turno da mesma sessão |
+| **D13** | `tools/opencode-service.sh` garante que o daemon tenha o env do provider | O atalho "daemon já HEALTHY ⇒ nada a fazer" **pulava a gravação** no `service.json`. O daemon vivo ficava com as variáveis só por **herança do shell** que o iniciou, e o `service.json` ficava incompleto — um restart fora daquele shell recriava o daemon sem elas | A persistência passou a ser uma condição **independente** do health check: `needs_persist` compara o valor gravado com o do shell e força o `opencode service set env` quando divergem (inclusive quando o valor gravado está **errado**, não só ausente). Ver regressão na [seção 22.3](#223-regressão-do-d13) |
 
 ### Observações para quem for mexer no `9router` depois
 
@@ -997,3 +998,176 @@ Trackeados  .env.example  AGENTS.md  PLAN.md  .gitignore
 Gitignored .env (600)  probe.jsonl
 Histórico  sem credenciais e sem identificadores de infraestrutura ✅
 ```
+
+---
+
+# 22. Rodada de consolidação — config sem literais e correção do D13
+
+Objetivo desta rodada: eliminar o **último literal de infraestrutura** que
+ainda vivia em arquivo de configuração (`opencode.json`) e garantir que o
+env do daemon do OpenCode sobrevivesse a um restart.
+
+## 22.1 `baseURL` do provider via `{env:...}`
+
+O `~/.config/opencode/opencode.json` carregava a URL do relay como literal:
+
+```json
+"baseURL": "https://<relay>/v1"
+```
+
+Trocado por:
+
+```json
+"baseURL": "{env:NINEROUTER_BASE_URL}"
+```
+
+O arquivo de configuração do OpenCode passou a **não conter nenhum valor
+real** — nem host, nem chave, nem URL. A chave já usava
+`{env:NINEROUTER_API_KEY}`; agora a URL usa o mesmo mecanismo.
+
+### Consequência: `NINEROUTER_BASE_URL` virou variável obrigatória
+
+Com a URL referenciada por ambiente, um daemon que nasça sem essa variável
+fica **sem baseURL** e toda chamada falha. Por isso ela entrou na lista
+`REQUIRED_VARS` de `tools/opencode-service.sh`:
+
+```
+REQUIRED_VARS=(NINEROUTER_API_KEY NINEROUTER_BASE_URL OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
+```
+
+## 22.2 `~/.zshenv` passa a ser livre de literais
+
+O `~/.zshenv` exportava `NINEROUTER_BASE_URL` como literal. Agora exporta
+**três** variáveis lidas do arquivo canônico de segredos em **tempo de
+execução**:
+
+```zsh
+_vs_secrets="${HOME}/.config/venice-stack/9router.env"
+if [[ -r "$_vs_secrets" ]]; then
+  _vs_get() {
+    grep -m1 "^$1=" "$_vs_secrets" | cut -d= -f2- | tr -d "\r" | sed -E "s/^'//; s/'$//"
+  }
+  export VENICE_STACK_SSH_HOST="$(_vs_get VENICE_STACK_SSH_HOST)"
+  export VENICE_STACK_SSH_USER="$(_vs_get VENICE_STACK_SSH_USER)"
+  export NINEROUTER_BASE_URL="$(_vs_get NINEROUTER_BASE_URL)"
+  unset -f _vs_get
+fi
+unset _vs_secrets
+```
+
+O único literal que permanece é a **chave de API**, que precisa estar no
+ambiente do daemon e é referenciada por `{env:NINEROUTER_API_KEY}`.
+
+Efeito colateral útil: o teste SSH não-interativo do `AGENTS.md` agora
+funciona **literalmente**, porque `VENICE_STACK_SSH_HOST` e
+`VENICE_STACK_SSH_USER` passam a existir no ambiente de um `zsh -c` limpo:
+
+```
+$ zsh -c 'ssh -o BatchMode=yes "${VENICE_STACK_SSH_USER}@${VENICE_STACK_SSH_HOST}" "echo NONINTERACTIVE_OK"'
+NONINTERACTIVE_OK
+```
+
+## 22.3 Regressão do D13
+
+O bug do D13 (o atalho "já HEALTHY ⇒ nada a fazer" pulava a gravação no
+`service.json`) foi reproduzido de propósito e corrigido.
+
+**Reprodução**: com o daemon vivo e saudável, o valor persistido foi apagado:
+
+```
+$ opencode service set env NINEROUTER_BASE_URL ""
+$ opencode service get env
+{ "NINEROUTER_API_KEY": "...", "NINEROUTER_BASE_URL": "" }
+```
+
+O daemon **continuava funcionando** (tinha a variável por herança do shell),
+e o `service.json` ficava com o valor **errado** — um restart viria e
+quebraria o provider.
+
+**Correção**: `needs_persist` passou a ser uma condição independente do
+health check, comparando o valor **gravado** com o valor **do shell**:
+
+```zsh
+needs_persist=false
+for v in "${REQUIRED_VARS[@]}"; do
+  want="$(printenv "$v" 2>/dev/null)"
+  have="$(persisted_env_value "$v" || true)"
+  if [[ "$want" != "$have" ]]; then
+    needs_persist=true
+    log "env persistido de $v divergente do shell - precisa gravar"
+  fi
+done
+
+if [[ "$healthy" == "true" && "$needs_restart" == "false" && "$needs_persist" == "false" ]]; then
+  log "servico ja HEALTHY com o env completo (pid ${pid}) - nada a fazer"
+else
+  ... persiste e sobe ...
+fi
+```
+
+A comparação é por **divergência**, não por ausência: um valor gravado
+**errado** (vazio, antigo, de outra máquina) também dispara a gravação.
+
+**Verificação** (com o valor persistido deliberadamente apagado):
+
+```
+[opencode-service] env persistido de NINEROUTER_BASE_URL divergente do shell - precisa gravar
+[opencode-service] env persistido de NINEROUTER_API_KEY ja esta atualizado
+[opencode-service] persistindo NINEROUTER_BASE_URL no service.json do OpenCode...
+```
+
+Depois:
+
+```
+$ opencode service get env
+{ "NINEROUTER_API_KEY": "...", "NINEROUTER_BASE_URL": "https://<relay>/v1" }
+```
+
+E a inferência real continuou respondendo:
+
+```
+$ zsh tools/opencode-service.sh --probe
+> orchestrator · ag/claude-sonnet-4-6
+OK
+[opencode-service] probe: provider respondeu
+```
+
+## 22.4 Higiene do ambiente local
+
+| Arquivo | Antes | Depois |
+|---|---|---|
+| `~/.config/opencode/opencode.json` | URL do relay literal | só `{env:...}` — **zero** valores reais |
+| `~/.config/opencode/opencode.json.bak` (e `.bak.2026…`) | cópias com o literal | removidos (config atual verificado e funcional) |
+| `~/.config/opencode/backups/opencode.json.2026….bak` | idem | removido |
+| `~/.zshenv` | URL do relay literal | lê do arquivo canônico em tempo de execução |
+| `~/.config/venice-stack/9router.env` | fonte de verdade (600) | mantido — **é** o ponto legítimo |
+| `~/.config/opencode/service.json` | env persistido do daemon | mantido (600) — ponto legítimo |
+| `~/.ssh/known_hosts` | host do servidor | mantido — SSH exige a chave de host |
+
+## 22.5 Identidade do git
+
+O `~/.gitconfig` **global** traz o nome e o e-mail pessoais do dono da
+máquina. Um commit novo em **qualquer** repositório carrega essa identidade —
+inclusive num repositório público.
+
+Para este repositório a identidade foi fixada **localmente**, sem tocar no
+global:
+
+```
+git config --local user.name  "venice-stack"
+git config --local user.email "noreply@localhost"
+```
+
+> O valor global **não** é reproduzido aqui de propósito: citá-lo no
+> repositório o reintroduziria no histórico. Para inspecioná-lo localmente:
+>
+> ```bash
+> git config --global user.name
+> git config --global user.email
+> ```
+
+O commit que vazou a identidade pessoal foi **recriado** com `commit-tree`
+(árvore, mensagem, datas e topologia preservadas; só autor e committer
+normalizados).
+
+

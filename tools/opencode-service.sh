@@ -157,7 +157,27 @@ for v in "${REQUIRED_VARS[@]}"; do
   fi
 done
 
-if [[ "$healthy" == "true" && "$needs_restart" == "false" ]]; then
+# O env PERSISTIDO no service.json do OpenCode e uma condicao INDEPENDENTE
+# do "daemon healthy".
+#
+# O daemon vivo pode ter as variaveis apenas por HERANCA do shell que o
+# iniciou (o ambiente e congelado no exec). Se o service.json nao as tiver,
+# um restart future - fora desse shell, por exemplo na extensao do VS Code -
+# recria o daemon sem elas e o provider quebra de novo.
+#
+# Bug corrigido: o atalho "daemon ja HEALTHY => nada a fazer" pulava a
+# gravacao, e o service.json ficava incompleto para sempre.
+needs_persist=false
+for v in "${REQUIRED_VARS[@]}"; do
+  want="$(printenv "$v" 2>/dev/null)"
+  have="$(persisted_env_value "$v" || true)"
+  if [[ "$want" != "$have" ]]; then
+    needs_persist=true
+    log "env persistido de $v divergente do shell - precisa gravar"
+  fi
+done
+
+if [[ "$healthy" == "true" && "$needs_restart" == "false" && "$needs_persist" == "false" ]]; then
   log "servico ja HEALTHY com o env completo (pid ${pid}) - nada a fazer"
 else
   # Persiste o env no proprio servico (independentemente de quem o iniciar).

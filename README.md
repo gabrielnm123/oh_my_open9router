@@ -388,6 +388,13 @@ zsh tools/opencode-service.sh --probe    # diagnostica + inferência real
 Ele usa `opencode service set env <KEY> <VALUE>`, para que o daemon nasça com
 as variáveis independente de quem o iniciou.
 
+> **Atenção ao diagnóstico.** O `--check` valida o **processo vivo**
+> (`/proc/<pid>/environ`). Um daemon pode estar saudável *e* ter as
+> variáveis apenas por **herança** do shell que o iniciou — nesse caso o
+> `service.json` fica incompleto e o próximo restart quebra o provider.
+> Por isso o `ensure` grava o env no `service.json` sempre que o valor
+> persistido diverge do valor do shell, independentemente do health check.
+
 Variáveis obrigatórias do daemon (lista `REQUIRED_VARS` do script):
 
 | Variável | Por quê |
@@ -619,6 +626,7 @@ host, usuário ou URL real está hardcoded.
 | `Error: API key required for remote API access` | daemon nasceu sem o env | `zsh tools/opencode-service.sh` |
 | `404` em `/v1/models` | `baseURL` sem `/v1` | corrija `NINEROUTER_BASE_URL` |
 | `401` em `/v1/*` | chave ausente/errada | confira `NINEROUTER_API_KEY` |
+| provider responde agora mas quebra após um restart | o env estava só **herdado** do shell, não gravado no `service.json` | `zsh tools/opencode-service.sh` (o `--check` só valida o processo vivo) |
 | `403`/`503` no tunnel após `enable` | relay ainda propagando | `zsh tools/wait-tunnel.sh wait` |
 | `ssh` pedindo passphrase em shell não interativo | askpass não configurado | refaça a [Fase 0 local](#4-fase-0--local-ssh-não-interativo) |
 | `Permit denied` no `sudo -n` | sem sudo NOPASSWD | ajuste as sudoers no servidor |
