@@ -364,6 +364,11 @@ O 9router expõe o catálogo em `GET /v1/models`. Prefixos de família:
 | `gc/` | Google |
 | `kimi/` | Kimi |
 | `mmf/` | — |
+| `nous/` | Nous (modelos `:free`) |
+| `xai/` | xAI (Grok) |
+| `gcli/` | Google CLI (Grok) |
+| `qd/` | Qoder (`dfmodel`/`qfmodel` funcionam; o resto pede assinatura) |
+| `kc/` | Kilocode (exige créditos — hoje só `402`) |
 
 > ⚠️ **O catálogo é pouco confiável.** Nem todo ID listado funciona. Sempre
 > valide com a [sonda](#8-fase-3--sondagem-dos-modelos) antes de atribuir um
@@ -406,6 +411,52 @@ Variáveis obrigatórias do daemon (lista `REQUIRED_VARS` do script):
 > Depois de qualquer mudança no `opencode.json` ou no
 > `oh-my-opencode-slim.json`, reinicie: `opencode service restart`.
 > O daemon carrega a config na inicialização — editar o arquivo não basta.
+
+### 6.4 Comando global `/refresh_models_9router`
+
+O `opencode.json` lista os modelos **um a um** em
+`providers.9router.models` — o OpenCode não descobre modelos de um provedor
+custom chamando `/v1/models` (descoberta automática existe só para Ollama, LM
+Studio, vLLM, Copilot e Azure). Quando o 9router ganha uma conexão nova, os
+modelos dela simplesmente não aparecem no `/models` do TUI até a config ser
+regravada.
+
+Para não depender de entrar neste repositório toda vez, existe um comando
+**global** do OpenCode:
+
+```
+zsh tools/install-command.sh        # instala/atualiza (idempotente)
+zsh tools/install-command.sh status
+zsh tools/install-command.sh uninstall
+```
+
+Depois disso, em **qualquer** projeto, dentro do TUI:
+
+```
+/refresh_models_9router                 # aplica (com backup antes)
+/refresh_models_9router --dry-run       # só mostra o que mudaria
+/refresh_models_9router --prune         # remove o que sumiu do catálogo
+/refresh_models_9router --refresh       # reescreve limits/capabilities
+/refresh_models_9router --only=qd/      # só uma família
+```
+
+O que o instalador deixa na máquina:
+
+| Caminho | Papel |
+| :--- | :--- |
+| `~/.local/share/9router-tools/sync-catalog.sh` + `lib/venice-env.sh` | cópia do sincronizador, para rodar fora do repo |
+| `~/.local/bin/refresh-9router-models` | wrapper que valida as flags e chama o script |
+| `~/.config/opencode/commands/refresh_models_9router.md` | o comando de barra em si (descoberto globalmente) |
+
+O comando usa um bloco de shell (`` !`…` ``) que roda o wrapper e injeta a
+saída no prompt; o agente só resume o resultado. Caminhos são absolutos, então
+funciona com qualquer diretório de trabalho.
+
+> **Em outra máquina:** rode `zsh tools/install-command.sh` de dentro do repo e
+> garanta que a cópia canônica `~/.config/venice-stack/9router.env` (600)
+> exista — é dela que o script instalado tira `NINEROUTER_BASE_URL` e
+> `NINEROUTER_API_KEY` quando não há `.env` por perto. Ver
+> [§11](#11-rotação-de-credenciais) e `tools/lib/venice-env.sh`.
 
 ---
 
@@ -612,6 +663,9 @@ Contrato de autenticação:
 | `tools/9router-systemd.sh` | gera/instala/remove a unit systemd (`install` \| `status` \| `uninstall`) |
 | `tools/wait-tunnel.sh` | força e aguarda o túnel nativo (`enable` \| `wait` \| `--status`) |
 | `tools/probe-models.sh` | sonda latência + HTTP + tool calling do catálogo |
+| `tools/sync-catalog.sh` | sincroniza `providers.9router.models` do `opencode.json` com o catálogo vivo (`--apply`, `--only`, `--refresh`, `--prune`) |
+| `tools/install-command.sh` | instala/remove o comando global `/refresh_models_9router` do OpenCode |
+| `tools/sync-models.sh` | distribui os modelos aprovados pela sonda entre os agentes do `oh-my-opencode-slim` |
 | `tools/opencode-service.sh` | garante o daemon do OpenCode com o env do provider |
 
 Todos são **zsh**, idempotentes, e leem a configuração do `.env` — nenhum
@@ -633,6 +687,9 @@ host, usuário ou URL real está hardcoded.
 | lockout no login do 9router | 4 tentativas falhas | aguarde o cooldown; não repita |
 | Editou o config e nada muda | daemon não reiniciado | `opencode service restart` |
 | `unit` não sobe | `.env` do servidor ausente | `EnvironmentFile` falha fechada — recrie o `~/.9router/.env` |
+| modelo existe no `/v1/models` mas não em `/models` | `providers.9router.models` desatualizado (o OpenCode não descobre modelos de provedor custom) | `/refresh_models_9router` (ou `zsh tools/sync-catalog.sh --apply`) |
+| `/refresh_models_9router` não aparece no TUI | comando não instalado/descoberto | `zsh tools/install-command.sh` e confirme `~/.config/opencode/commands/refresh_models_9router.md` |
+| `/refresh_models_9router` falha com "chave ausente" | sem `.env` e sem a cópia canônica | recrie `~/.config/venice-stack/9router.env` (600) |
 
 ---
 
@@ -648,6 +705,9 @@ tools/lib/venice-env.sh             # carregador do .env
 tools/9router-systemd.sh            # gerador da unit systemd
 tools/wait-tunnel.sh                # controle do túnel nativo
 tools/probe-models.sh               # sonda de modelos
+tools/sync-catalog.sh               # opencode.json <- catálogo vivo do 9router
+tools/install-command.sh            # comando global /refresh_models_9router
+tools/sync-models.sh                # distribui modelos aprovados entre os agentes
 tools/opencode-service.sh           # env do daemon do OpenCode
 ```
 

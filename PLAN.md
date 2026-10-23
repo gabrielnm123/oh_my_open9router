@@ -1171,3 +1171,147 @@ O commit que vazou a identidade pessoal foi **recriado** com `commit-tree`
 normalizados).
 
 
+
+---
+
+# 23. Deriva do catálogo — `qd/*` e `kc/*` ausentes do `opencode.json`
+
+Sintoma relatado: o modelo `qd/dfmodel` não aparecia entre os modelos
+disponíveis do 9router.
+
+## 23.1 Diagnóstico
+
+O `GET /v1/models` **devolvia** `qd/dfmodel` (141 modelos no total), então o
+problema não estava no 9router: estava no `opencode.json`, que lista os
+modelos **um a um** em `providers.9router.models`. Esse bloco foi gerado
+quando o catálogo tinha 121 modelos; depois disso o 9router ganhou duas
+conexões novas — `qd/*` (qoder, 12 modelos) e `kc/*` (kilocode, 8 modelos) —
+e a config ficou velha.
+
+| Onde | `qd/dfmodel` existe? |
+|---|---|
+| `GET {relay}/v1/models` (catálogo do 9router) | sim |
+| `~/.config/opencode/opencode.json` (`providers.9router.models`) | **não** (121 de 141) |
+| `opencode models` / seletor do TUI | **não** (reflexo do arquivo acima) |
+
+Ou seja: 121 modelos na config, 141 no catálogo, e a diferença era exatamente
+`qd/*` (12) + `kc/*` (8). Nada de cache, nada de túnel.
+
+## 23.2 Sondagem das duas famílias novas
+
+`tools/probe-models.sh --filter 'qd/'` e `--filter 'kc/'`:
+
+| Família | HTTP 200 + tool calling | Diagnóstico |
+|---|---|---|
+| `qd/*` | 2 de 12 (`qd/qfmodel`, `qd/dfmodel`) | os outros 10 devolvem `503` com `[qoder/<model>] [403] code 112` apontando `https://qoder.com/pricing` — falta assinatura no upstream |
+| `kc/*` | 0 de 8 | `503` com `[kilocode/...] [402] Paid Model - Credits Required` — sem créditos |
+
+`qd/dfmodel` e `qd/qfmodel` respondem em ~2,4–2,9 s e chamam ferramenta
+corretamente (`finish_reason: tool_calls`), então são utilizáveis.
+
+## 23.3 Correção: `tools/sync-catalog.sh`
+
+Script novo, idempotente, que casa o `opencode.json` com o catálogo vivo:
+
+```
+zsh tools/sync-catalog.sh                  # dry-run (diff)
+zsh tools/sync-catalog.sh --apply          # grava, com backup antes
+zsh tools/sync-catalog.sh --only 'qd/'     # restringe a prefixos
+zsh tools/sync-catalog.sh --refresh        # reescreve limits/caps
+zsh tools/sync-catalog.sh --prune          # remove os que sumiram
+```
+
+- lê URL/chave do `.env` (via `tools/lib/venice-env.sh`), nada hardcoded;
+- monta a entrada a partir dos metadados reais do catálogo
+  (`context_length`, `max_completion_tokens`, `capabilities.vision/pdf/tools`);
+- só mexe em `providers.9router.models` — `$schema`, `model`, `plugin` e
+  `lsp` ficam intactos;
+- backup em `~/.config/opencode/backups/opencode.json.<stamp>.bak`;
+- preserva modo `600`; a segunda execução é no-op (verificado).
+
+Aplicado: **141 modelos** no `providers.9router.models`, incluindo `qd/dfmodel`.
+`opencode models | grep '9router/qd/'` passou a listar as 12 entradas.
+
+> Próximo passo natural, quando/se o upstream for pago: rodar
+> `zsh tools/sync-models.sh` para que os agentes do `oh-my-opencode-slim`
+> também considerem `qd/*` (o `probe.jsonl` da raiz está vazio, então a sonda
+> precisa rodar antes — `zsh tools/probe-models.sh --concurrency 6`).
+
+---
+
+# 24. Comando global `/refresh_models_9router`
+
+Objetivo: atualizar o catálogo do 9router no OpenCode **sem** depender de estar
+dentro deste repositório.
+
+## 24.1 Por que um comando e não só o script
+
+O `opencode.json` lista os modelos um a um (§23). Enquanto o operador trabalha
+em qualquer outro projeto, o catálogo continua mudando — e o modelo novo só
+aparece depois de alguém rodar o sincronizador no diretório certo. Daí o
+comando de barra global.
+
+## 24.2 `tools/install-command.sh`
+
+Instalador idempotente (`install` | `status` | `uninstall` | `--print`).
+Copia o sincronizador para fora do repo e escreve o comando global:
+
+| Caminho gerado | Modo | Papel |
+|---|---|---|
+| `${XDG_DATA_HOME:-~/.local/share}/9router-tools/sync-catalog.sh` | `755` | cópia do sincronizador |
+| `…/9router-tools/lib/venice-env.sh` | `644` | carregador de ambiente da cópia |
+| `${XDG_BIN_HOME:-~/.local/bin}/refresh-9router-models` | `755` | wrapper: valida flags e chama o script |
+| `${XDG_CONFIG_HOME:-~/.config}/opencode/commands/refresh_models_9router.md` | `644` | o comando de barra |
+
+O `.md` usa um bloco de shell (`` !`…` ``) com **caminho absoluto** para o
+wrapper — o comando funciona de qualquer diretório de trabalho. O wrapper só
+aceita `--apply`, `--dry-run`, `--refresh`, `--prune` e `--only=`; qualquer
+outro texto é ignorado com aviso, e nada dele vai para o shell (o bloco de shell
+do OpenCode é executado fora do fluxo de permissões de ferramenta — regra da doc
+de commands).
+
+Sem argumentos o comando **aplica**; `--dry-run` só mostra o diff.
+
+## 24.3 `tools/lib/venice-env.sh` fora do repo
+
+Para rodar longe do repositório, o carregador ganhou dois ajustes:
+
+1. `VENICE_ENV_FILE` e `VENICE_CANONICAL_ENV` passam a ser *overridable*
+   (`: "${VAR:=default}"`), preservando o comportamento anterior por padrão;
+2. o fallback canônico (`~/.config/venice-stack/9router.env`) passou a ser
+   **lido** — antes o caminho existia no comentário, mas nada era carregado.
+   Ele só preenche variável vazia (nunca sobrescreve o `.env` nem o ambiente),
+   aceita só o formato `KEY='valor'` de uma linha, e usa `${(P)name-}` para não
+   quebrar sob `set -u`.
+
+Resultado: o comando instalado funciona fora do repo sem nenhuma credencial
+duplicada — a fonte continua sendo o arquivo `600`.
+
+## 24.4 Verificação
+
+```
+$ cd /tmp && ~/.local/bin/refresh-9router-models --dry-run
+[catalog] catalogo: 141 modelos · config: 141 · escopo: 141
+[catalog] nada a fazer: config ja esta em sincronia.
+```
+
+`opencode api get /api/command` lista `refresh_models_9router` entre os comandos
+(8 no total). Exercitado também por `POST /api/session/{id}/command`, que
+executou o bloco de shell, injetou a saída do sincronizador no prompt e
+entregou a mensagem ao agente — o comando está funcional de ponta a ponta.
+
+> A execução no teste ficou presa não por causa do comando, mas porque o modelo
+> de teste (`ag/claude-sonnet-4-6`) estava indisponível no upstream
+> (`antigravity/... Unavailable`). O comando em si já tinha feito o trabalho.
+
+## 24.5 Provisionar outra máquina
+
+```
+git clone <repo> && cd <repo>
+cp .env.example .env && chmod 600 .env     # preencher os valores reais
+zsh tools/install-command.sh               # instala o comando global
+```
+
+Se preferir não manter o `.env` do projeto na máquina, basta a cópia canônica
+`~/.config/venice-stack/9router.env` (`600`): é dela que o comando instalado
+tira `NINEROUTER_BASE_URL` e `NINEROUTER_API_KEY`.
