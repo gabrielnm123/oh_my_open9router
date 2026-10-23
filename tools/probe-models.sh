@@ -25,6 +25,7 @@
 #   zsh tools/probe-models.sh --repeat 2           # 2 requisicoes por modelo
 #   zsh tools/probe-models.sh --out probe.jsonl    # caminho de saida
 #   zsh tools/probe-models.sh --models lista.txt   # sonda uma lista propria
+#   zsh tools/probe-models.sh --quick              # subconjunto representativo
 #
 # Variaveis de ambiente:
 #   NINEROUTER_BASE_URL  (obrigatorio; vem do .env da raiz do projeto)
@@ -33,6 +34,7 @@
 #   PROBE_CONCURRENCY    (default: 4)
 #   PROBE_TIMEOUT        (default: 120, segundos por requisicao)
 #   PROBE_REPEAT         (default: 1)
+#   PROBE_QUICK_MODELS   (default: nucleo curado; usado por --quick)
 
 set -euo pipefail
 
@@ -49,6 +51,17 @@ OUT="probe.jsonl"
 MODELS_FILE=""
 FILTER=""
 APPEND=false
+QUICK=false
+
+# Nomeadas em `--quick`: cobrem as familias que costumam ser boas em agentes
+# (qualidade, ferramenta, visao, rapidez) sem varrer as centenas de IDs.
+: "${PROBE_QUICK_MODELS:=ag/claude-sonnet-4-6 ag/claude-opus-4-6-thinking ag/gemini-3.8-flash-high \
+ag/gemini-3.8-flash ag/gemini-3.1-pro-high ag/gpt-oss-120b-medium \
+cx/gpt-5.6-luna cx/gpt-6-luna cx/gpt-5.6-terra cx/gpt-5.6-sol \
+gh/gpt-4.1 gh/gpt-4o-mini gh/claude-haiku-4.5 \
+oc/gpt-oss-120b kimi/kimi-k2.5 kimi/kimi-k2.6 qd/dfmodel qd/qfmodel}"
+
+QUICK_MODELS=(${=PROBE_QUICK_MODELS})
 
 while (( $# > 0 )); do
   case "$1" in
@@ -58,6 +71,7 @@ while (( $# > 0 )); do
     --out)         OUT="$2";         shift 2 ;;
     --models)      MODELS_FILE="$2"; shift 2 ;;
     --filter)      FILTER="$2";      shift 2 ;;
+    --quick)       QUICK=true;       shift ;;
     --append)      APPEND=true;      shift ;;
     -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "opcao desconhecida: $1" >&2; exit 1 ;;
@@ -88,7 +102,10 @@ BASE_URL="${BASE_URL%/}"
 
 # ------------------------------------------------------- lista de modelos ----
 
-if [[ -n "$MODELS_FILE" ]]; then
+if [[ "$QUICK" == true ]]; then
+  MODELS=("${QUICK_MODELS[@]}")
+  log "modo --quick: ${#MODELS[@]} modelos curados"
+elif [[ -n "$MODELS_FILE" ]]; then
   [[ -r "$MODELS_FILE" ]] || die "lista de modelos ilegivel: $MODELS_FILE"
   MODELS=("${(@f)$(grep -v '^[[:space:]]*$' "$MODELS_FILE")}")
 else
