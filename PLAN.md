@@ -1397,3 +1397,14 @@ A prova de ponta a ponta do comando de barra é
 `POST /api/session/{id}/command` (o `opencode run "/comando"` não expande
 comandos). O caminho instalado é exercitado rodando o wrapper a partir de
 `/tmp`, que é o que o bloco de shell do `.md` faz.
+
+## 25.5 Restart do daemon dentro do TUI
+
+Nas duas primeiras execuções reais, `--apply` gravou a config e então chamou
+`opencode service restart` — que derrubou o daemon que hospedava a própria
+sessão, cancelando o comando antes da resposta. O arquivo já estava correto
+(backup e nova atribuição confirmados), mas o usuário não recebia o resumo.
+
+Decisão: o comando `.md` chama o seletor com `--no-restart` e instrui o agente
+a avisar que o restart ficou pendente. Fora do TUI, `--restart` continua
+disponível e reinicia na mesma execução.

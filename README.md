@@ -501,6 +501,12 @@ do repo, e na raiz do projeto quando roda de dentro dele.
 > Modelos `:free`/`-free` recebem penalidade na pontuação: são o último recurso,
 > nunca a primeira escolha quando há um equivalente pago aprovado.
 
+> **Restart do daemon:** o comando de barra usa `--no-restart` por padrão.
+> `opencode service restart` derruba a própria sessão do TUI, e o comando seria
+> cancelado antes de responder. Depois de aplicar, rode
+> `opencode service restart` (ou reabra o app) para o daemon carregar a nova
+> atribuição. Fora do TUI, `--restart` faz isso na mesma execução.
+
 ---
 
 ## 7. Fase 2 — oh-my-opencode-slim

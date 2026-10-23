@@ -139,21 +139,26 @@ description: Auto-seleciona os melhores modelos para todos os agentes do oh-my-o
 Pinga e testa todos os modelos disponíveis (9router + nativos do OpenCode),
 escolhe os melhores por papel (orchestrator, oracle, explorer, designer,
 fixer, observer, council + councillors) e aplica no
-\`~/.config/opencode/oh-my-opencode-slim.json\` com backup + reset do daemon
-quando necessário.
+\`~/.config/opencode/oh-my-opencode-slim.json\` com backup.
+
+Por padrão o comando **não** reinicia o daemon: reiniciar de dentro do TUI
+derruba a própria sessão (o comando é cancelado antes de responder). Depois de
+aplicar, avise o usuário para rodar \`opencode service restart\` (ou reabrir o
+app). Se estiver rodando fora do TUI, use \`--restart\`.
 
 Saída do seletor:
 
-!\`${SEL_WRAPPER} \$ARGUMENTS\`
+!\`${SEL_WRAPPER} --no-restart \$ARGUMENTS\`
 
 Responda em português, curto e sem inventar:
 1. Quantos testados e quantos aprovados (9router + nativos)
 2. Principais mudanças por agente
 3. Caminho do backup caso tenha gravado
-4. Daemon reiniciado? (sim/não)
+4. Que o restart do daemon ficou pendente (se houve mudança)
 5. Em caso de erro, diga a causa e o próximo passo
 
-Padrão: aplica. Use \`--dry-run\` para só mostrar, \`--quick\` para varredura mais rápida.
+Padrão: aplica com \`--no-restart\`. Use \`--dry-run\` para só mostrar,
+\`--quick\` para varredura mais rápida, \`--restart\` para reiniciar o daemon.
 EOF
 }
 
