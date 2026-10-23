@@ -458,6 +458,49 @@ funciona com qualquer diretório de trabalho.
 > `NINEROUTER_API_KEY` quando não há `.env` por perto. Ver
 > [§11](#11-rotação-de-credenciais) e `tools/lib/venice-env.sh`.
 
+### 6.5 Comando global `/auto_select_models_oh_my_opencode_slim`
+
+O catálogo lista **IDs**, não garantias: um modelo pode aparecer no `/models` e
+responder `403`/`402`/`503` no upstream, ou não suportar tool calling. Atribuir
+um desses a um agente quebra o fluxo. Este comando sonda antes de escolher.
+
+```
+/auto_select_models_oh_my_opencode_slim                 # sonda tudo e aplica
+/auto_select_models_oh_my_opencode_slim --dry-run       # só mostra a atribuição
+/auto_select_models_oh_my_opencode_slim --quick         # sonda reduzida (mais rápido)
+/auto_select_models_oh_my_opencode_slim --only-native   # ignora o 9router
+/auto_select_models_oh_my_opencode_slim --no-restart    # grava sem reiniciar o daemon
+```
+
+O mesmo instalador (`zsh tools/install-command.sh`) cria:
+
+| Caminho | Papel |
+| :--- | :--- |
+| `~/.local/share/9router-tools/select-models.sh` | motor de seleção |
+| `~/.local/share/9router-tools/probe-models.sh` | sonda de latência + tool calling |
+| `~/.local/bin/auto-select-9router-models` | wrapper que valida as flags |
+| `~/.config/opencode/commands/auto_select_models_oh_my_opencode_slim.md` | o comando de barra |
+
+Como ele decide:
+
+1. sonda o 9router (`probe-models.sh`) e os modelos **nativos** do OpenCode
+   (`opencode/*`, `gh/*`, `cx/*`, …) com o mesmo teste de `get_weather`;
+2. considera aprovado só `HTTP 200` **e** tool call devolvido;
+3. classifica por papel (`werkzeug`, `rapido`, `raciocinio`, `visao`,
+   `nao_critico`) e escolhe até 3 referências por agente (principal +
+   fallbacks), mais os quatro `council/*`;
+4. prefere o 9router (tier 0); se não houver nenhum aprovado, usa os nativos
+   como plano B — se só existirem os free do OpenCode, são eles que entram;
+5. grava `~/.config/opencode/oh-my-opencode-slim.json` com backup em
+   `~/.config/opencode/backups/` e reinicia o daemon (salvo `--no-restart`).
+
+Os arquivos de sonda (`probe.jsonl`, `probe-native.jsonl`) ficam ao lado dos
+scripts instalados (`~/.local/share/9router-tools/`) quando o comando roda fora
+do repo, e na raiz do projeto quando roda de dentro dele.
+
+> Modelos `:free`/`-free` recebem penalidade na pontuação: são o último recurso,
+> nunca a primeira escolha quando há um equivalente pago aprovado.
+
 ---
 
 ## 7. Fase 2 — oh-my-opencode-slim
@@ -664,7 +707,7 @@ Contrato de autenticação:
 | `tools/wait-tunnel.sh` | força e aguarda o túnel nativo (`enable` \| `wait` \| `--status`) |
 | `tools/probe-models.sh` | sonda latência + HTTP + tool calling do catálogo |
 | `tools/sync-catalog.sh` | sincroniza `providers.9router.models` do `opencode.json` com o catálogo vivo (`--apply`, `--only`, `--refresh`, `--prune`) |
-| `tools/install-command.sh` | instala/remove o comando global `/refresh_models_9router` do OpenCode |
+| `tools/install-command.sh` | instala/remove os comandos globais `/refresh_models_9router` e `/auto_select_models_oh_my_opencode_slim` |
 | `tools/sync-models.sh` | distribui os modelos aprovados pela sonda entre os agentes do `oh-my-opencode-slim` |
 | `tools/opencode-service.sh` | garante o daemon do OpenCode com o env do provider |
 
@@ -688,7 +731,7 @@ host, usuário ou URL real está hardcoded.
 | Editou o config e nada muda | daemon não reiniciado | `opencode service restart` |
 | `unit` não sobe | `.env` do servidor ausente | `EnvironmentFile` falha fechada — recrie o `~/.9router/.env` |
 | modelo existe no `/v1/models` mas não em `/models` | `providers.9router.models` desatualizado (o OpenCode não descobre modelos de provedor custom) | `/refresh_models_9router` (ou `zsh tools/sync-catalog.sh --apply`) |
-| `/refresh_models_9router` não aparece no TUI | comando não instalado/descoberto | `zsh tools/install-command.sh` e confirme `~/.config/opencode/commands/refresh_models_9router.md` |
+| `/refresh_models_9router` ou `/auto_select_models_oh_my_opencode_slim` não aparecem no TUI | comando não instalado/descoberto | `zsh tools/install-command.sh` e confirme os `.md` em `~/.config/opencode/commands/` |
 | `/refresh_models_9router` falha com "chave ausente" | sem `.env` e sem a cópia canônica | recrie `~/.config/venice-stack/9router.env` (600) |
 
 ---
@@ -706,7 +749,7 @@ tools/9router-systemd.sh            # gerador da unit systemd
 tools/wait-tunnel.sh                # controle do túnel nativo
 tools/probe-models.sh               # sonda de modelos
 tools/sync-catalog.sh               # opencode.json <- catálogo vivo do 9router
-tools/install-command.sh            # comando global /refresh_models_9router
+tools/install-command.sh            # comandos globais (refresh + auto-select)
 tools/sync-models.sh                # distribui modelos aprovados entre os agentes
 tools/opencode-service.sh           # env do daemon do OpenCode
 ```

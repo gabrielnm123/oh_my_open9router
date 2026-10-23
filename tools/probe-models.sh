@@ -40,14 +40,21 @@ set -euo pipefail
 
 # Carrega o .env da raiz do projeto (fonte da verdade; gitignored, 600).
 # Nao ha URL real hardcoded no repositorio: vem do .env (veja .env.example).
-VENICE_PROJECT_ROOT="${0:A:h:h}"
-source "${0:A:h}/lib/venice-env.sh"
+SELF="${0:A}"
+TOOLS_DIR="${SELF:h}"
+if [[ -e "${TOOLS_DIR:h}/.git" ]]; then
+  ROOT="${TOOLS_DIR:h}"
+else
+  ROOT="${TOOLS_DIR}"
+fi
+VENICE_PROJECT_ROOT="$ROOT"
+source "${TOOLS_DIR}/lib/venice-env.sh"
 
 BASE_URL="${NINEROUTER_BASE_URL:-}"
 CONCURRENCY="${PROBE_CONCURRENCY:-4}"
 TIMEOUT="${PROBE_TIMEOUT:-120}"
 REPEAT="${PROBE_REPEAT:-1}"
-OUT="probe.jsonl"
+OUT="${ROOT}/probe.jsonl"
 MODELS_FILE=""
 FILTER=""
 APPEND=false

@@ -33,8 +33,16 @@
 
 set -euo pipefail
 
-ROOT="${0:A:h:h}"
-source "${0:A:h}/lib/venice-env.sh"
+SELF="${0:A}"
+TOOLS_DIR="${SELF:h}"
+# Dentro do repo: tools/ mora em <repo>/tools. Instalado (fora do repo):
+# tools/ e a propria pasta ~/.local/share/9router-tools (layout plano).
+if [[ -e "${TOOLS_DIR:h}/.git" ]]; then
+  ROOT="${TOOLS_DIR:h}"
+else
+  ROOT="${TOOLS_DIR}"
+fi
+source "${TOOLS_DIR}/lib/venice-env.sh"
 
 PROBE_OUT="${ROOT}/probe.jsonl"
 NATIVE_OUT="${ROOT}/probe-native.jsonl"
@@ -78,7 +86,7 @@ probe_9router() {
   [[ -n "$PROBE_FILTER" ]] && extra=(--filter "$PROBE_FILTER")
   [[ "$QUICK" == true ]] && extra+=(--quick)
   log "sondando o 9router (concurrency=${PROBE_CONCURRENCY})..."
-  zsh "${ROOT}/tools/probe-models.sh" \
+  zsh "${TOOLS_DIR}/probe-models.sh" \
       --concurrency "$PROBE_CONCURRENCY" --out "$PROBE_OUT" "${extra[@]}" \
       || warn "a sonda do 9router falhou; seguindo com o que ja existir em $PROBE_OUT"
 }
@@ -225,7 +233,13 @@ def read_jsonl(path):
     return rows
 
 probes = {}
-for r in read_jsonl(probe_path) + read_jsonl(native_path):
+# A sonda do 9router grava IDs sem prefixo; a nativa grava "provedor/modelo".
+# Normalizamos para referencias completas, senao um mesmo ID (ex.: cx/x) seria
+# contado como nativo e o 9router perderia a preferencia.
+for r in read_jsonl(probe_path):
+    if r.get("model"):
+        probes["9router/" + r["model"]] = r
+for r in read_jsonl(native_path):
     if r.get("model"):
         probes[r["model"]] = r
 
@@ -291,10 +305,7 @@ def tier(mid):
     return 0 if mid.startswith("9router/") else 1
 
 def bare(mid):
-    if "/" in mid:
-        # preserva o ID completo para provedores sem prefixo 9router (ex.: opencode/foo)
-        return mid
-    return mid
+    return mid[len("9router/"):] if mid.startswith("9router/") else mid
 
 def reward_penalty(mid):
     low = mid.lower()
@@ -303,7 +314,10 @@ def reward_penalty(mid):
     return 0
 
 def probe_for(mid):
-    return probes.get(mid) or probes.get(bare(mid)) or probes.get(mid.replace("9router/", "")) or {}
+    return (probes.get(mid)
+            or probes.get("9router/" + bare(mid))
+            or probes.get(bare(mid))
+            or {})
 
 def quality(mid):
     m = meta(mid)

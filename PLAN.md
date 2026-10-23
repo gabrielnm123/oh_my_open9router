@@ -1315,3 +1315,85 @@ zsh tools/install-command.sh               # instala o comando global
 Se preferir não manter o `.env` do projeto na máquina, basta a cópia canônica
 `~/.config/venice-stack/9router.env` (`600`): é dela que o comando instalado
 tira `NINEROUTER_BASE_URL` e `NINEROUTER_API_KEY`.
+
+---
+
+# 25. Comando global `/auto_select_models_oh_my_opencode_slim`
+
+Objetivo: escolher, para cada papel do `oh-my-opencode-slim`, o melhor modelo
+que **realmente responde** — não o que apenas aparece no catálogo. O catálogo
+lista IDs; um ID pode retornar `403`/`402`/`503` no upstream ou não suportar
+tool calling.
+
+## 25.1 O que o motor faz
+
+`tools/select-models.sh`:
+
+1. sonda o 9router com `tools/probe-models.sh` (latência + `get_weather`);
+2. sonda os modelos nativos do OpenCode com o mesmo payload, direto no
+   endpoint público do provedor (`/api/model` fornece os metadados);
+3. considera aprovado só `HTTP 200` **e** tool call presente;
+4. pontua por papel (`werkzeug`, `rapido`, `raciocinio`, `visao`,
+   `nao_critico`): contexto, saída máxima, reasoning, visão e latência;
+5. escolhe até 3 referências por agente (principal + fallbacks) e os quatro
+   `council/*`;
+6. grava `~/.config/opencode/oh-my-opencode-slim.json` com backup e reinicia o
+   daemon (salvo `--no-restart`).
+
+Preferência: 9router (tier 0) → nativos do OpenCode (tier 1). Se o 9router não
+tiver nenhum aprovado, os agentes continuam funcionais com os nativos; se só
+existirem os free do OpenCode, são eles que entram. IDs `:free`/`-free` levam
+penalidade — são último recurso, não primeira escolha.
+
+## 25.2 Instalação e layout
+
+O mesmo `tools/install-command.sh` instala os dois comandos e copia os quatro
+arquivos de apoio para `~/.local/share/9router-tools/`:
+
+| Origem | Destino |
+|---|---|
+| `tools/sync-catalog.sh` | `…/9router-tools/sync-catalog.sh` |
+| `tools/select-models.sh` | `…/9router-tools/select-models.sh` |
+| `tools/probe-models.sh` | `…/9router-tools/probe-models.sh` |
+| `tools/lib/venice-env.sh` | `…/9router-tools/lib/venice-env.sh` |
+| — (gerado) | `~/.local/bin/{refresh,auto-select}-9router-models` |
+| — (gerado) | `~/.config/opencode/commands/{refresh,auto_select}*.md` |
+
+## 25.3 Dois bugs corrigidos depois do primeiro teste
+
+1. **`parameter not set` no wrapper do refresh.** A linha
+   `(( $# == 0 || $have_apply ))` colocava a string `false` em contexto
+   aritmético; sob `set -u` o zsh tentava ler a variável `false`. Troca por
+   `if (( $# == 0 )) || [[ "$have_apply" == true ]]`.
+2. **Cópias instaladas procuravam `ROOT/tools/…`.** Os scripts calculavam
+   `ROOT="${0:A:h:h}"`, que dentro do repo é a raiz do projeto mas, instalados
+   em `~/.local/share/9router-tools/`, apontava para `~/.local/share` —
+   daí `can't open input file: ~/.local/share/tools/probe-models.sh` e
+   “sonda ausente”. Agora cada script resolve a própria pasta (`TOOLS_DIR`) e
+   usa a raiz do repo **só** quando `${TOOLS_DIR:h}/.git` existe; fora do repo,
+   dados (`probe.jsonl`, `probe-native.jsonl`) ficam ao lado do próprio script.
+   O `venice-env.sh` faz a mesma detecção para achar o `.env`.
+
+## 25.4 Verificação
+
+```
+$ cd /tmp && ~/.local/bin/refresh-9router-models --dry-run
+[catalog] catalogo: 170 modelos · config: 170 · escopo: 170
+[catalog] nada a fazer: config ja esta em sincronia.
+
+$ cd /tmp && ~/.local/bin/auto-select-9router-models --dry-run
+[select] aprovados: 54 no 9router · 9 nativos do OpenCode
+```
+
+Sonda de 2026-10-22 (catálogo de 170 modelos, concorrência 10): 54 aprovaram
+(HTTP 200 **e** tool calling) — `cx` 10/19, `gh` 13/28, `kc` 10/22, `oc` 9/15,
+`nous` 5/8, `ag` 4/25, `qd` 2/12; famílias `cbai`, `gc`, `kimi`, `xai` e
+`teste` não tinham nenhum modelo funcional no momento. A atribuição aplicada
+ficou toda no 9router (`9router/cx/gpt-5.6-luna[1m]` como principal, com
+`9router/cx/gpt-6-luna[1m]` e `9router/cx/gpt-5.6-terra[1m]` de fallback;
+`explorer` em `9router/gh/gpt-4o-2024-11-20`).
+
+A prova de ponta a ponta do comando de barra é
+`POST /api/session/{id}/command` (o `opencode run "/comando"` não expande
+comandos). O caminho instalado é exercitado rodando o wrapper a partir de
+`/tmp`, que é o que o bloco de shell do `.md` faz.

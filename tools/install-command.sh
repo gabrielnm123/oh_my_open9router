@@ -61,11 +61,11 @@ wrapper_refresh() {
 set -euo pipefail
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/sync-catalog.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "refresh-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
-args=(); only=""; have_apply=false
+args=(); only=""; have_dry=false
 for a in "$@"; do
   case "$a" in
-    --apply)   have_apply=true; args+=(--apply) ;;
-    --dry-run) args+=(--dry-run) ;;
+    --apply)   ;;
+    --dry-run) have_dry=true; args+=(--dry-run) ;;
     --refresh) args+=(--refresh) ;;
     --prune)   args+=(--prune) ;;
     --only=*)  only="${a#--only=}" ;;
@@ -74,7 +74,9 @@ for a in "$@"; do
   esac
 done
 [[ -n "$only" ]] && args+=(--only "$only")
-(( $# == 0 || $have_apply )) && args+=(--apply)
+if [[ "$have_dry" == false ]]; then
+  args+=(--apply)
+fi
 exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
 EOF
 }
@@ -86,11 +88,11 @@ wrapper_select() {
 set -euo pipefail
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
-args=()
+args=(); have_dry=false
 for a in "$@"; do
   case "$a" in
-    --apply)           args+=(--apply) ;;
-    --dry-run)         args+=(--dry-run) ;;
+    --apply)           ;;
+    --dry-run)         have_dry=true; args+=(--dry-run) ;;
     --probe)           args+=(--probe) ;;
     --quick)           args+=(--quick) ;;
     --only-native)     args+=(--only-native) ;;
@@ -101,7 +103,9 @@ for a in "$@"; do
     *)                 print -u2 "auto-select-9router-models: argumento ignorado: $a" ;;
   esac
 done
-(( $# == 0 )) && args+=(--apply)
+if [[ "$have_dry" == false ]]; then
+  args+=(--apply)
+fi
 exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
 EOF
 }

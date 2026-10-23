@@ -30,8 +30,17 @@
 # Este arquivo nao define funcao de negocio: apenas popula o ambiente.
 
 # Raiz do projeto. O chamador normalmente ja define; o fallback usa o proprio
-# caminho do lib (tools/lib/venice-env.sh -> tools -> raiz do projeto).
-: "${VENICE_PROJECT_ROOT:=${0:A:h:h:h}}"
+# caminho do lib. Dentro do repo: tools/lib/venice-env.sh -> tools -> raiz.
+# Instalado (layout plano em ~/.local/share/9router-tools/lib): a raiz e o
+# diretorio pai de lib/.
+_venice_lib_dir="${0:A:h}"
+if [[ -e "${_venice_lib_dir:h:h}/.git" ]]; then
+  _venice_root="${_venice_lib_dir:h:h}"
+else
+  _venice_root="${_venice_lib_dir:h}"
+fi
+: "${VENICE_PROJECT_ROOT:=${_venice_root}}"
+unset _venice_lib_dir _venice_root
 
 # Arquivo de credenciais da raiz. Nao versionado (ver .gitignore).
 # Pode ser apontado explicitamente por `VENICE_ENV_FILE` (util quando o script
