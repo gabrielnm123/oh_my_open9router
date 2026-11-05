@@ -187,6 +187,22 @@ Só entra no pool quem foi pingado **e** aprovado (`HTTP 200` + tool call), nas
 duas pontas. Nativo sem sonda válida fica de fora, mesmo presente no catálogo do
 OpenCode. Se a sonda falhar, nada é gravado.
 
+Depois da sonda, **pesquise na web** quais aprovados são os melhores para cada
+papel (e, no seletor uncensored, quais recusam menos) e registre no histórico
+persistente:
+
+```sh
+zsh ~/.local/share/9router-tools/model-history.sh record \
+  --model 9router/<id> --role <papel> --score <0.0-1.0> \
+  --verdict <best|good|weak|bad> --source <URL> --note "<motivo>"
+zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
+```
+
+O histórico é cumulativo e entra na execução seguinte: a nota de pesquisa pesa
+mais que latência medida, e um modelo com histórico forte que não respondeu
+nesta rodada continua como fallback (`[histórico]`). Arquivo:
+`model-history.json` (`600`, gitignored). `--dry-run` não escreve.
+
 ---
 
 ## Fase 5 — Verificação Final

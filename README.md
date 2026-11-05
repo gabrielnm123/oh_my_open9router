@@ -485,6 +485,7 @@ O mesmo instalador (`zsh tools/install-command.sh`) cria:
 | :--- | :--- |
 | `~/.local/share/9router-tools/select-models.sh` | motor de seleção |
 | `~/.local/share/9router-tools/probe-models.sh` | sonda de latência + tool calling |
+| `~/.local/share/9router-tools/model-history.sh` | histórico/ranking persistente por papel |
 | `~/.local/bin/auto-select-9router-models` | wrapper que valida as flags |
 | `~/.config/opencode/commands/auto_select_models_oh_my_opencode_slim.md` | o comando de barra |
 
@@ -522,6 +523,48 @@ verificado do que um fallback que só quebra em produção.
 > cancelado antes de responder. Depois de aplicar, rode
 > `opencode service restart` (ou reabra o app) para o daemon carregar a nova
 > atribuição. Fora do TUI, `--restart` faz isso na mesma execução.
+
+### 6.6 Pesquisa web e histórico por papel
+
+A sonda mede o que **respondeu hoje**; ela não sabe se o modelo é bom na função.
+Por isso o comando de barra tem um segundo passo, obrigatório: depois da
+varredura, o agente pesquisa na web (benchmarks, tool calling, contexto,
+recusa/censura quando o alvo é o seletor uncensored) e grava as notas em um
+histórico cumulativo. Esse histórico entra na **próxima** execução.
+
+```
+zsh ~/.local/share/9router-tools/model-history.sh record \
+  --model 9router/<id> --role <papel> --score <0.0-1.0> \
+  --verdict <best|good|weak|bad> --source <URL> --note "<motivo>"
+zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
+zsh ~/.local/share/9router-tools/model-history.sh show --model <id>
+```
+
+Papéis aceitos: `orchestrator`, `oracle`, `explorer`, `designer`, `fixer`,
+`observer`, `council`, `council/{architect,reviewer,optimiser,visual}` e as
+categorias internas `werkzeug`, `rapido`, `raciocinio`, `visao`, `nao_critico`.
+
+Como o histórico pesa na escolha:
+
+1. cada modelo recebe, por categoria, `research` (0–1) e `assigned` (quantas
+   vezes já foi escolhido); a ordenação soma `1000 * research + 5 * assigned` à
+   pontuação de qualidade/velocidade da sonda;
+2. pesquisa nova **pode derrubar** um modelo antes bem colocado — a última nota
+   por papel vence, e o `research_log` guarda até 50 registros com fonte e data;
+3. um modelo com histórico forte (`research >= 0.7` ou 2+ aprovações) que **não
+   respondeu nesta rodada** continua na cadeia como fallback extra, marcado
+   `[histórico]` na saída do seletor. Uma falha isolada não apaga um bom modelo;
+4. a atribuição aplicada também é registrada (`assignment`), então o ranking
+   reflete o que realmente rodou.
+
+O arquivo é `model-history.json` (`600`, gitignored): ao rodar o comando de
+barra ele fica em `~/.local/share/9router-tools/`; ao rodar o script direto
+dentro do repo, na raiz do projeto. `zsh tools/install-command.sh install`
+semeia o histórico instalado a partir do histórico do repo quando o destino
+ainda não existe (nunca sobrescreve), e `uninstall` preserva o arquivo.
+
+`--dry-run` **não** escreve no histórico; só `--apply` (o padrão do wrapper)
+grava sonda, notas e atribuições.
 
 ---
 
@@ -734,6 +777,7 @@ Contrato de autenticação:
 | `tools/9router-systemd.sh` | gera/instala/remove a unit systemd (`install` \| `status` \| `uninstall`) |
 | `tools/wait-tunnel.sh` | força e aguarda o túnel nativo (`enable` \| `wait` \| `--status`) |
 | `tools/probe-models.sh` | sonda latência + HTTP + tool calling do catálogo |
+| `tools/model-history.sh` | histórico/ranking por papel (`record` \| `merge` \| `score` \| `ranking` \| `assignment` \| `show` \| `path`) |
 | `tools/sync-catalog.sh` | sincroniza `providers.9router.models` do `opencode.json` com o catálogo vivo (`--apply`, `--only`, `--refresh`, `--prune`) |
 | `tools/install-command.sh` | instala/remove os comandos globais `/refresh_models_9router` e `/auto_select_models_oh_my_opencode_slim` |
 | `tools/sync-models.sh` | distribui os modelos aprovados pela sonda entre os agentes do `oh-my-opencode-slim` |

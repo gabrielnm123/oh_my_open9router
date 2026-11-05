@@ -173,6 +173,26 @@ derruba a própria sessão (o comando é cancelado antes de responder). Depois d
 aplicar, avise o usuário para rodar \`opencode service restart\` (ou reabrir o
 app). Se estiver rodando fora do TUI, use \`--restart\`.
 
+Pesquisa e histórico (obrigatório, depois da sonda):
+pesquise na web quais modelos aprovados são realmente os melhores para cada
+papel (tool calling, raciocínio, contexto, latência) e grave o resultado no
+histórico persistente. O histórico é cumulativo e altera a ordenação da
+**próxima** execução — uma pesquisa nova pode derrubar um modelo antigo.
+
+\`\`\`
+zsh ~/.local/share/9router-tools/model-history.sh record \\
+  --model 9router/<id-ou-nativo> --role <papel> --score <0.0-1.0> \\
+  --verdict <best|good|weak|bad> --source <URL> --note "<motivo curto>"
+zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
+\`\`\`
+
+Papéis aceitos: orchestrator, oracle, explorer, designer, fixer, observer,
+council, council/architect, council/reviewer, council/optimiser,
+council/visual, werkzeug, rapido, raciocinio, visao, nao_critico.
+Registre pelo menos os 3 primeiros de cada agente alterado. Um modelo com
+histórico forte que não respondeu nesta rodada continua como fallback
+(marcado \`[histórico]\`) — não o descarte por causa de uma falha isolada.
+
 Saída do seletor:
 
 !\`${SEL_WRAPPER} --no-restart \$ARGUMENTS\`
@@ -193,22 +213,30 @@ wrapper_uncensored() {
   cat <<'EOF'
 #!/usr/bin/env zsh
 # GERADO por tools/install-command.sh — não edite à mão.
+#
+# Mesma regra do seletor principal: sonda SEMPRE completa, aplica com backup.
 set -euo pipefail
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models-uncensored.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-uncensored-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
-args=(); have_dry=false
-for a in "$@"; do
-  case "$a" in
-    --apply)           ;;
-    --dry-run)         have_dry=true; args+=(--dry-run) ;;
-    --probe)           args+=(--probe) ;;
-    --quick)           args+=(--quick) ;;
-    --only-native)     args+=(--only-native) ;;
-    --no-restart)      args+=(--no-restart) ;;
-    --restart)         args+=(--restart) ;;
-    --probe-filter=*)  args+=(--probe-filter "${a#--probe-filter=}") ;;
-    "")                ;;
-    *)                 print -u2 "auto-select-uncensored-models: argumento ignorado: $a" ;;
+args=(--probe); have_dry=false
+while (( $# > 0 )); do
+  case "$1" in
+    --apply)        shift ;;
+    --dry-run)      have_dry=true; args+=(--dry-run); shift ;;
+    --probe)        shift ;;
+    --no-restart)   args+=(--no-restart); shift ;;
+    --restart)      args+=(--restart); shift ;;
+    --quick|--only-native)
+        print -u2 "auto-select-uncensored-models: $1 ignorado — a sonda é sempre completa (todos os modelos)"
+        shift ;;
+    --probe-filter)
+        print -u2 "auto-select-uncensored-models: --probe-filter ignorado — a sonda é sempre completa (todos os modelos)"
+        (( $# >= 2 )) && shift; shift ;;
+    --probe-filter=*)
+        print -u2 "auto-select-uncensored-models: --probe-filter ignorado — a sonda é sempre completa (todos os modelos)"
+        shift ;;
+    "")             shift ;;
+    *)              print -u2 "auto-select-uncensored-models: argumento ignorado: $1"; shift ;;
   esac
 done
 if [[ "$have_dry" == false ]]; then
@@ -232,6 +260,24 @@ Por padrão o comando **não** reinicia o daemon (reiniciar de dentro do TUI
 derruba a própria sessão). Depois de aplicar, rode \`opencode service restart\`.
 Se estiver fora do TUI, use \`--restart\`.
 
+Pesquisa e histórico (obrigatório, depois da sonda):
+pesquise na web quais modelos aprovados são os melhores para cada papel
+**e** quais recusam menos (censura/refusal, alinhamento, jailbreak conhecido),
+e grave no histórico persistente:
+
+\`\`\`
+zsh ~/.local/share/9router-tools/model-history.sh record \\
+  --model 9router/<id-ou-nativo> --role <papel> --score <0.0-1.0> \\
+  --verdict <best|good|weak|bad> --source <URL> --note "<motivo curto>"
+zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
+\`\`\`
+
+Papéis aceitos: orchestrator, oracle, explorer, designer, fixer, observer,
+council, council/architect, council/reviewer, council/optimiser,
+council/visual, werkzeug, rapido, raciocinio, visao, nao_critico.
+O histórico é cumulativo, muda o ranking da próxima execução e preserva como
+fallback (\`[histórico]\`) um modelo forte que não respondeu agora.
+
 Saída do seletor:
 
 !\`${UNC_WRAPPER} --no-restart \$ARGUMENTS\`
@@ -244,14 +290,17 @@ Responda em português, curto e sem inventar:
 5. Que o restart do daemon ficou pendente (se houve mudança)
 6. Em caso de erro, diga a causa e o próximo passo
 
-Padrão: aplica com \`--no-restart\`. Use \`--dry-run\` para só mostrar,
-\`--quick\` para varredura mais rápida, \`--restart\` para reiniciar o daemon.
+Padrão: sonda completa + aplica com \`--no-restart\`. Use \`--dry-run\` para só
+mostrar o diff, \`--restart\` para reiniciar o daemon. \`--quick\`,
+\`--only-native\` e \`--probe-filter\` são recusados: o universo é sempre inteiro.
 EOF
 }
 
 
 do_install() {
-  for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" "${ROOT}/tools/probe-models.sh" "${ROOT}/tools/lib/venice-env.sh"; do
+  for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" \
+           "${ROOT}/tools/select-models-uncensored.sh" "${ROOT}/tools/probe-models.sh" \
+           "${ROOT}/tools/model-history.sh" "${ROOT}/tools/lib/venice-env.sh"; do
     [[ -r "$f" ]] || { log "ERRO: $f não encontrado"; exit 1; }
   done
   mkdir -p "$DATA_DIR/lib" "$BIN_DIR" "$CMD_DIR"
@@ -260,6 +309,14 @@ do_install() {
   install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755
   install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644
   install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755
+  install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755
+  # Histórico já acumulado no repo (execução manual) vira semente do instalado,
+  # mas nunca sobrescreve um histórico instalado mais novo.
+  if [[ -f "${ROOT}/model-history.json" && ! -f "${DATA_DIR}/model-history.json" ]]; then
+    cp "${ROOT}/model-history.json" "${DATA_DIR}/model-history.json"
+    chmod 600 "${DATA_DIR}/model-history.json"
+    log "semeado: ${DATA_DIR}/model-history.json (a partir do repo)"
+  fi
   write_generated "$REF_WRAPPER" 0755 wrapper_refresh
   write_generated "$SEL_WRAPPER" 0755 wrapper_select
   write_generated "$UNC_WRAPPER" 0755 wrapper_uncensored
@@ -275,15 +332,29 @@ do_uninstall() {
   for f in "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && { rm -f "$f"; log "removido: $f"; n=1; }
   done
-  [[ -d "$DATA_DIR" ]] && { rm -rf "$DATA_DIR"; log "removido: $DATA_DIR"; n=1; }
+  if [[ -f "${DATA_DIR}/model-history.json" ]]; then
+    log "preservado: ${DATA_DIR}/model-history.json (histórico de modelos)"
+  fi
+  if [[ -d "$DATA_DIR" ]]; then
+    find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name 'model-history.json' -exec rm -rf {} +
+    log "removido: $DATA_DIR (exceto o histórico)"
+    n=1
+  fi
   (( n )) || log "nada instalado"
 }
 
 do_status() {
   log "repo: $ROOT"
-  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
+  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/model-history.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && printf '  [ok]  %s\n' "$f" || printf '  [--]  %s\n' "$f"
   done
+  local hist="${DATA_DIR}/model-history.json"
+  if [[ -f "$hist" ]]; then
+    printf '  [ok]  %s (%s modelos)\n' "$hist" \
+      "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("models",{})))' "$hist" 2>/dev/null || echo '?')"
+  else
+    printf '  [--]  %s (histórico ainda vazio)\n' "$hist"
+  fi
 }
 
 do_print() {

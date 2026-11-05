@@ -12,6 +12,10 @@
 probe.jsonl
 *.log
 
+# Historico de modelos (sonda + pesquisa web): dado de operacao, nao codigo.
+model-history.json
+model-history.json.tmp
+
 # O .env.example É versionado: e um modelo, nao contem segredo real.
 # As negacoes abaixo existem para sobrepor as regras acima, caso o padrao
 # *.env passe a casar com sufixos .example no futuro.

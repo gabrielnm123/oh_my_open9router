@@ -52,6 +52,8 @@ source "${TOOLS_DIR}/lib/venice-env.sh"
 PROBE_OUT="${ROOT}/probe.jsonl"
 NATIVE_OUT="${ROOT}/probe-native.jsonl"
 CONFIG="${HOME}/.config/opencode/oh-my-opencode-slim.json"
+HISTORY="${MODEL_HISTORY:-${ROOT}/model-history.json}"
+HISTORY_ENABLED=true
 APPLY=false
 RESTART=true
 # A sonda roda sempre: o pool nunca vem de probe.jsonl reaproveitado.
@@ -80,6 +82,8 @@ while (( $# > 0 )); do
     --probe-out)    PROBE_OUT="$2"; shift 2 ;;
     --native-out)   NATIVE_OUT="$2"; shift 2 ;;
     --config)       CONFIG="$2";  shift 2 ;;
+    --history)      HISTORY="$2"; shift 2 ;;
+    --no-history)   HISTORY_ENABLED=false; shift ;;
     -h|--help)      sed -n '2,40p' "$0"; exit 0 ;;
     *) printf '[select] opcao desconhecida: %s\n' "$1" >&2; exit 1 ;;
   esac
@@ -221,14 +225,17 @@ else
   : > "$CATALOG"
 fi
 
-python3 - "$PROBE_OUT" "$NATIVE_OUT" "$CATALOG" "$CONFIG" "$APPLY" "$RESTART" "$ONLY_NATIVE" <<'PY'
+python3 - "$PROBE_OUT" "$NATIVE_OUT" "$CATALOG" "$CONFIG" "$APPLY" "$RESTART" "$ONLY_NATIVE" \
+         "$HISTORY" "$HISTORY_ENABLED" "${TOOLS_DIR}/model-history.sh" <<'PY'
 import json, os, shutil, sys, subprocess, time
 
 (probe_path, native_path, catalog_path, config_path,
- apply_s, restart_s, only_native_s) = sys.argv[1:8]
+ apply_s, restart_s, only_native_s, history_path, history_enabled_s,
+ history_sh) = sys.argv[1:11]
 apply = apply_s == "true"
 restart = restart_s == "true"
 only_native = only_native_s == "true"
+history_on = history_enabled_s == "true" and os.path.exists(history_sh)
 
 log = lambda *a: print("[select]", *a, flush=True)
 
@@ -398,40 +405,6 @@ log(f"testados: {testados_9} no 9router · {testados_nativo} nativos do OpenCode
 log(f"aprovados: {len(by_tier[0])} no 9router · {len(by_tier[1])} nativos do OpenCode"
     + (" (--only-native: 9router ignorado)" if only_native else ""))
 
-pools = {}
-for cat, key in CATEGORIES.items():
-    pool = [m for m in universe if REQUIRES[cat](m)]
-    # Ordena por tier primeiro: 9router antes de nativo, sempre.
-    pools[cat] = sorted(pool, key=lambda m: (tier(m), -key(m), m))
-    log(f"pool {cat:<12}: {len(pool):>3} modelos")
-
-for cat in ("raciocinio", "visao"):
-    if not pools[cat]:
-        log(f"AVISO: nada aprovado em '{cat}'; papeis que dependem dela usam fallback")
-
-def pick(profiles):
-    chosen = []
-    for cat in profiles:
-        for mid in pools.get(cat, []):
-            if mid not in chosen:
-                chosen.append(mid)
-                if len(chosen) == 3:
-                    return chosen
-    for cat in CATEGORIES:
-        for mid in pools.get(cat, []):
-            if mid not in chosen:
-                chosen.append(mid)
-                if len(chosen) == 3:
-                    return chosen
-    return chosen
-
-def full(mid):
-    """Referencia completa para o config: provedor/nome."""
-    return mid if "/" in bare(mid) or mid.startswith("9router/") else mid
-
-def ref(mid):
-    return mid if mid.startswith("9router/") else mid
-
 AGENT_PROFILES = {
     "orchestrator":  ["werkzeug", "raciocinio", "nao_critico"],
     "oracle":        ["raciocinio", "werkzeug", "nao_critico"],
@@ -456,13 +429,104 @@ COUNCIL_PROMPTS = {
     "visual":    "Focus on UI/UX correctness, accessibility, and visual details.",
 }
 
+# ------------------------------------------------------------- historico -----
+# Cada categoria e consultada com os agentes que a usam: a nota de pesquisa
+# pode ter sido registrada pelo nome do agente ou pela categoria.
+CAT_AGENTS = {}
+for _agent, _profiles in AGENT_PROFILES.items():
+    CAT_AGENTS.setdefault(_profiles[0], []).append(_agent)
+for _name, _profiles in COUNCIL_PROFILES.items():
+    CAT_AGENTS.setdefault(_profiles[0], []).append("council/" + _name)
+
+hist = {}
+if history_on and os.path.exists(history_path):
+    for _cat, _agents in CAT_AGENTS.items():
+        try:
+            _r = subprocess.run(
+                ["zsh", history_sh, "score", "--role", _cat,
+                 "--agents", ",".join(_agents)],
+                capture_output=True, text=True, timeout=30)
+            hist[_cat] = json.loads(_r.stdout or "{}")
+        except Exception as _exc:
+            log(f"AVISO: historico indisponivel para '{_cat}' ({_exc})")
+            hist[_cat] = {}
+    if any(hist.values()):
+        log(f"historico: {history_path}")
+
+def hscore(mid, cat):
+    e = (hist.get(cat) or {}).get(mid) or {}
+    return float(e.get("research") or 0.0), int(e.get("assigned") or 0)
+
+def stale_candidates(cat):
+    """Modelos que nao responderam agora, mas tem historico forte.
+    Ficam como fallback para nao perder um bom modelo por uma sonda ruim."""
+    out = []
+    for mid, e in (hist.get(cat) or {}).items():
+        if mid in universe:
+            continue
+        research = float(e.get("research") or 0.0)
+        ok, fail = int(e.get("ok") or 0), int(e.get("fail") or 0)
+        if research >= 0.7 or (ok >= 2 and ok > fail):
+            out.append((-research, -(ok - fail), mid))
+    return [m for _r, _d, m in sorted(out)]
+
+stale_picked = []
+
+pools = {}
+for cat, key in CATEGORIES.items():
+    pool = [m for m in universe if REQUIRES[cat](m)]
+    def _score(m, cat=cat, key=key):
+        research, assigned = hscore(m, cat)
+        return key(m) + 1000.0 * research + 5 * assigned
+    # Ordena por tier primeiro: 9router antes de nativo, sempre.
+    pools[cat] = sorted(pool, key=lambda m: (tier(m), -_score(m), m))
+    log(f"pool {cat:<12}: {len(pool):>3} modelos")
+
+for cat in ("raciocinio", "visao"):
+    if not pools[cat]:
+        log(f"AVISO: nada aprovado em '{cat}'; papeis que dependem dela usam fallback")
+
+def pick(profiles):
+    chosen = []
+    for cat in profiles:
+        for mid in pools.get(cat, []):
+            if mid not in chosen:
+                chosen.append(mid)
+                if len(chosen) == 3:
+                    return chosen
+    for cat in CATEGORIES:
+        for mid in pools.get(cat, []):
+            if mid not in chosen:
+                chosen.append(mid)
+                if len(chosen) == 3:
+                    return chosen
+    return chosen
+
+def pick_with_history(profiles):
+    """pick() + preserva 1 modelo com historico forte que nao respondeu agora."""
+    chosen = pick(profiles)
+    for cat in profiles:
+        for mid in stale_candidates(cat):
+            if mid not in chosen:
+                chosen.append(mid)
+                stale_picked.append((mid, cat))
+                return chosen
+    return chosen
+
+def full(mid):
+    """Referencia completa para o config: provedor/nome."""
+    return mid if "/" in bare(mid) or mid.startswith("9router/") else mid
+
+def ref(mid):
+    return mid if mid.startswith("9router/") else mid
+
 config = json.load(open(config_path))
 preset_name = config.get("preset", "9router")
 preset = config.setdefault("presets", {}).setdefault(preset_name, {})
 
 changes = []
 for agent, profiles in AGENT_PROFILES.items():
-    picked = pick(profiles)
+    picked = pick_with_history(profiles)
     if not picked:
         log(f"AVISO: sem modelo para '{agent}'; mantendo o valor atual")
         continue
@@ -474,7 +538,7 @@ for agent, profiles in AGENT_PROFILES.items():
 
 council = config.setdefault("council", {}).setdefault("presets", {})
 for name, profiles in COUNCIL_PROFILES.items():
-    picked = pick(profiles)
+    picked = pick_with_history(profiles)
     if not picked:
         continue
     entry = council.setdefault("default", {}).setdefault(name, {})
@@ -491,19 +555,60 @@ print("=" * 78)
 print(f"  ATRIBUICAO DE MODELOS AOS AGENTES"
       f"  ({len(by_tier[0])} do 9router, {len(by_tier[1])} nativos)")
 print("=" * 78)
+stale_set = {m for m, _cat in stale_picked}
+
+def _fmt(m):
+    return m + " [histórico]" if m in stale_set else m
+
 for agent in AGENT_PROFILES:
     chain = preset.get(agent, {}).get("model") or []
     mark = " ~" if any(c[0] == agent for c in changes) else "  "
-    head = chain[0] if chain else "(vazio)"
-    extra = "  → " + ", ".join(chain[1:]) if len(chain) > 1 else ""
+    head = _fmt(chain[0]) if chain else "(vazio)"
+    extra = "  → " + ", ".join(_fmt(m) for m in chain[1:]) if len(chain) > 1 else ""
     print(f" {mark} {agent:<13} {head}{extra}")
 print()
 for name in COUNCIL_PROFILES:
     entry = council.get("default", {}).get(name, {})
     mark = " ~" if any(c[0] == f"council.{name}" for c in changes) else "  "
-    print(f" {mark} council/{name:<10} {entry.get('model', '(vazio)')}")
+    model = entry.get("model", "(vazio)")
+    print(f" {mark} council/{name:<10} {_fmt(model)}")
 print("=" * 78)
 print()
+if stale_picked:
+    log("preservado(s) pelo historico (nao responderam nesta rodada, entram como fallback):")
+    for mid, cat in dict.fromkeys(stale_picked):
+        print(f"   - {mid}  (categoria {cat})")
+
+# ------------------------------------------------------------- historico ----
+# Grava a sonda no historico e registra a atribuicao de cada agente. Assim a
+# proxima execucao ja parte de um ranking acumulado, e nao do zero.
+# Somente quando o resultado foi realmente aplicado: --dry-run nao escreve.
+if history_on and apply:
+    try:
+        _r = subprocess.run(
+            ["zsh", history_sh, "merge",
+             "--probe", probe_path, "--native", native_path],
+            capture_output=True, text=True, timeout=60)
+        for line in (_r.stdout or "").splitlines():
+            if line.strip():
+                log(line.replace("[history] ", "historico: "))
+        for agent in AGENT_PROFILES:
+            chain = preset.get(agent, {}).get("model") or []
+            if chain:
+                subprocess.run(
+                    ["zsh", history_sh, "assignment", "--agent", agent,
+                     "--models", ",".join(chain)],
+                    capture_output=True, text=True, timeout=30)
+        for name in COUNCIL_PROFILES:
+            model = council.get("default", {}).get(name, {}).get("model")
+            if model:
+                subprocess.run(
+                    ["zsh", history_sh, "assignment", "--agent", "council/" + name,
+                     "--models", model],
+                    capture_output=True, text=True, timeout=30)
+        log(f"historico atualizado: {history_path}")
+    except Exception as exc:
+        log(f"AVISO: falha ao atualizar o historico ({exc})")
 
 if not changes:
     log("nada a fazer: os agentes ja estao apontando para os melhores aprovados.")

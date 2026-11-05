@@ -1439,3 +1439,41 @@ Decisões:
 
 Custo aceito: a varredura completa leva dezenas de minutos (201 modelos,
 `--max-time 120`, concorrência 8). É o preço de não escolher no escuro.
+
+## 27. Histórico por papel + pesquisa web no seletor
+
+Problema: a sonda só sabe o que respondeu **agora**. Um modelo pode estar fora
+do ar numa rodada (503, cota, relay) e ainda ser a melhor escolha para um papel;
+e a nota de qualidade medida não sabe se ele é bom em planejar, revisar ou
+chamar ferramenta. Cada execução começava do zero.
+
+Decisões:
+
+1. Novo `tools/model-history.sh` com histórico cumulativo em JSON
+   (`model-history.json`, modo `600`, gitignored). Comandos: `record`, `merge`,
+   `score`, `ranking`, `assignment`, `show`, `path`. Escrita atômica
+   (`tmp` + `os.replace`), leitura tolerante a arquivo ausente.
+2. A pesquisa web é feita pelo **agente que roda o comando de barra** (depois da
+   sonda, `websearch`), e gravada via `record --role ... --score ... --source`.
+   O bloco `!` do `.md` roda antes de o modelo responder, então a pesquisa
+   alimenta a execução **seguinte** — o histórico existe justamente para isso.
+3. O seletor soma `1000 * research + 5 * assigned` à pontuação da categoria.
+   Pesquisa nova pode rebaixar quem estava bem; a última nota por papel vence e
+   o `research_log` guarda até 50 registros com fonte e data.
+4. Modelo com histórico forte (`research >= 0.7` ou 2+ aprovações) que **não**
+   respondeu na rodada é anexado como fallback extra e marcado `[histórico]`.
+   Não é promovido a principal: sem prova de vida nesta rodada, ele só cobre o
+   caso de o principal falhar.
+5. `merge` identifica a origem pelo **arquivo** (`--probe` = 9router,
+   `--native` = nativo), não pelo formato do ID — `cbai/minimax-m3` tem barra e
+   era classificado como nativo quando o arquivo nativo existia vazio.
+6. `merge` é idempotente por `ts`: reimportar a mesma sonda (mesmo `ts`) não
+   duplica `ok`/`fail`; e um `last_probe_run` guarda a rodada inteira.
+7. `--dry-run` **não** escreve no histórico. `merge` e `assignment` só rodam com
+   `--apply`, senão o histórico registraria uma atribuição que nunca foi gravada.
+8. `install-command.sh` instala `model-history.sh`, semeia o histórico do repo
+   quando o instalado ainda não existe e **preserva** o arquivo no `uninstall`
+   (o `rm -rf` do diretório de dados apagaria anos de ranking).
+
+Custo: cada execução real escreve duas vezes (merge da sonda + assignment por
+agente/councillor) num arquivo pequeno; nada de rede.

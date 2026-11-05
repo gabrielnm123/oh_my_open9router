@@ -56,6 +56,7 @@ only_native=false
 dry_run=false
 config_path=""
 probe_filter=""
+history_path="${ROOT}/model-history.json"
 
 for arg in "$@"; do
   case "$arg" in
@@ -68,6 +69,8 @@ for arg in "$@"; do
     --only-native)  only_native=true ;;
     --config=*)     config_path="${arg#--config=}" ;;
     --config)       : ;;  # próximo arg ignorado; zsh não tem shift fácil aqui
+    --history=*)    history_path="${arg#--history=}" ;;
+    --no-history)   history_path="" ;;
     --probe-filter=*) probe_filter="${arg#--probe-filter=}" ;;
     *)              printf '[select-uncensored] AVISO: argumento ignorado: %s\n' "$arg" >&2 ;;
   esac
@@ -78,8 +81,19 @@ done
 # ----------------------------------------------------------------- sonda ----
 probe_path="${ROOT}/probe.jsonl"
 native_path="${ROOT}/probe-native.jsonl"
-catalog_path="${HOME}/.local/share/9router-tools/catalog.json"
-[[ -z "$config_path" ]] && config_path="${HOME}/.config/opencode/oh-my-opencode-slim.json"
+config_path="${config_path:-${HOME}/.config/opencode/oh-my-opencode-slim.json}"
+# O catálogo é buscado ao vivo (mesmo que o select-models.sh), nunca de um
+# arquivo local antigo: um modelo pode sair do catálogo sem sair da sonda.
+catalog_path="$(mktemp "${TMPDIR:-/tmp}/select-uncensored-catalog.XXXXXX")"
+trap 'rm -f "$catalog_path"' EXIT
+if [[ -n "${NINEROUTER_BASE_URL:-}" && -n "${NINEROUTER_API_KEY:-}" ]]; then
+  curl -sS --max-time 60 -H "Authorization: Bearer ${NINEROUTER_API_KEY}" \
+    "${NINEROUTER_BASE_URL%/}/models" -o "$catalog_path" 2>/dev/null || : > "$catalog_path"
+  [[ -s "$catalog_path" ]] || warn "catálogo do 9router indisponível; a classificação usará só a sonda"
+else
+  warn "NINEROUTER_API_KEY/NINEROUTER_BASE_URL ausentes; a classificação usará só a sonda"
+  : > "$catalog_path"
+fi
 
 if [[ "$do_probe" == true ]]; then
   probe_args=(--concurrency 6)
@@ -104,16 +118,20 @@ python3 - \
   "$only_native" \
   "$no_restart" \
   "$do_restart" \
+  "$history_path" \
+  "${TOOLS_DIR}/model-history.sh" \
   <<'PYEOF'
 import sys, json, os, subprocess, shutil, datetime
 
 probe_path, native_path, catalog_path, config_path, \
-  apply_str, only_native_str, no_restart_str, do_restart_str = sys.argv[1:]
+  apply_str, only_native_str, no_restart_str, do_restart_str, \
+  history_path, history_sh = sys.argv[1:11]
 
 apply       = apply_str       == "true"
 only_native = only_native_str == "true"
 no_restart  = no_restart_str  == "true"
 do_restart  = do_restart_str  == "true"
+history_on  = os.path.exists(history_sh)
 
 def log(msg): print(f"[select-uncensored] {msg}", flush=True)
 
@@ -265,9 +283,10 @@ universe = set()
 for mid, r in probes.items():
     if approved(r):
         universe.add(mid)
-for mid in native_meta:
-    if mid not in universe:
-        universe.add(mid)
+# Nativo so entra se passou na sonda: catalogo do OpenCode nao e prova de vida.
+nao_sonados = sorted(m for m in native_meta if m not in probes)
+if nao_sonados:
+    log(f"AVISO: {len(nao_sonados)} nativo(s) sem sonda valida; ficam fora")
 if only_native:
     universe = {m for m in universe if not m.startswith("9router/")}
 
@@ -303,10 +322,58 @@ REQUIRES = {
     "nao_critico": lambda mid: True,
 }
 
+# ------------------------------------------------------------- historico -----
+CAT_AGENTS = {
+    "werkzeug":    ["orchestrator", "designer", "fixer", "observer", "council",
+                    "council/reviewer", "council/optimiser"],
+    "raciocinio":  ["oracle", "council/architect"],
+    "rapido":      ["explorer", "council/optimiser"],
+    "visao":       ["observer", "designer", "council/visual"],
+    "nao_critico": ["orchestrator", "oracle", "explorer", "designer", "fixer",
+                    "observer", "council"],
+}
+
+hist = {}
+if history_on and os.path.exists(history_path):
+    for _cat, _agents in CAT_AGENTS.items():
+        try:
+            _r = subprocess.run(
+                ["zsh", history_sh, "score", "--role", _cat,
+                 "--agents", ",".join(_agents)],
+                capture_output=True, text=True, timeout=30)
+            hist[_cat] = json.loads(_r.stdout or "{}")
+        except Exception as _exc:
+            log(f"AVISO: historico indisponivel para '{_cat}' ({_exc})")
+            hist[_cat] = {}
+    if any(hist.values()):
+        log(f"historico: {history_path}")
+
+def hscore(mid, cat):
+    e = (hist.get(cat) or {}).get(mid) or {}
+    return float(e.get("research") or 0.0), int(e.get("assigned") or 0)
+
+def stale_candidates(cat):
+    out = []
+    for mid, e in (hist.get(cat) or {}).items():
+        if mid in universe:
+            continue
+        research = float(e.get("research") or 0.0)
+        ok, fail = int(e.get("ok") or 0), int(e.get("fail") or 0)
+        if research >= 0.7 or (ok >= 2 and ok > fail):
+            out.append((-research, -(ok - fail), mid))
+    return [m for _r, _d, m in sorted(out)]
+
+stale_picked = []
+
 pools = {}
 for cat, key_fn in CATEGORIES.items():
     pool = [m for m in universe if REQUIRES[cat](m)]
-    pools[cat] = sorted(pool, key=key_fn)
+    def _key(m, cat=cat, key_fn=key_fn):
+        ut, pt = uncensored_tier(m)
+        research, assigned = hscore(m, cat)
+        base = key_fn(m)[2]          # -quality/-speed
+        return (ut, pt, base - 1000.0 * research - 5 * assigned, m)
+    pools[cat] = sorted(pool, key=_key)
     log(f"pool {cat:<12}: {len(pool):>3} modelos")
 
 for cat in ("raciocinio", "visao"):
@@ -327,6 +394,17 @@ def pick(profiles):
                 chosen.append(mid)
                 if len(chosen) == 3:
                     return chosen
+    return chosen
+
+def pick_with_history(profiles):
+    """pick() + preserva 1 modelo com historico forte que nao respondeu agora."""
+    chosen = pick(profiles)
+    for cat in profiles:
+        for mid in stale_candidates(cat):
+            if mid not in chosen:
+                chosen.append(mid)
+                stale_picked.append((mid, cat))
+                return chosen
     return chosen
 
 AGENT_PROFILES = {
@@ -362,7 +440,7 @@ preset      = config.setdefault("presets", {}).setdefault(preset_name, {})
 
 changes = []
 for agent, profiles in AGENT_PROFILES.items():
-    picked = pick(profiles)
+    picked = pick_with_history(profiles)
     if not picked:
         log(f"AVISO: sem modelo para '{agent}'; mantendo valor atual")
         continue
@@ -374,7 +452,7 @@ for agent, profiles in AGENT_PROFILES.items():
 
 council = config.setdefault("council", {}).setdefault("presets", {})
 for name, profiles in COUNCIL_PROFILES.items():
-    picked = pick(profiles)
+    picked = pick_with_history(profiles)
     if not picked:
         continue
     entry = council.setdefault("default", {}).setdefault(name, {})
@@ -412,6 +490,40 @@ for name in COUNCIL_PROFILES:
 
 print("=" * 78)
 print()
+
+stale_set = {m for m, _cat in stale_picked}
+if stale_set:
+    log("preservado(s) pelo historico (nao responderam nesta rodada, entram como fallback): "
+        + ", ".join(sorted(stale_set)))
+
+# ------------------------------------------------------------ historico -----
+# Somente quando o resultado foi realmente aplicado: --dry-run nao escreve.
+if history_on and apply:
+    try:
+        _r = subprocess.run(
+            ["zsh", history_sh, "merge",
+             "--probe", probe_path, "--native", native_path],
+            capture_output=True, text=True, timeout=60)
+        for line in (_r.stdout or "").splitlines():
+            if line.strip():
+                log(line.replace("[history] ", "historico: "))
+        for agent in AGENT_PROFILES:
+            chain = preset.get(agent, {}).get("model") or []
+            if chain:
+                subprocess.run(
+                    ["zsh", history_sh, "assignment", "--agent", agent,
+                     "--models", ",".join(chain)],
+                    capture_output=True, text=True, timeout=30)
+        for name in COUNCIL_PROFILES:
+            model = council.get("default", {}).get(name, {}).get("model")
+            if model:
+                subprocess.run(
+                    ["zsh", history_sh, "assignment", "--agent", "council/" + name,
+                     "--models", model],
+                    capture_output=True, text=True, timeout=30)
+        log(f"historico atualizado: {history_path}")
+    except Exception as exc:
+        log(f"AVISO: falha ao atualizar o historico ({exc})")
 
 if not changes:
     log("nada a fazer: agentes já apontam para os melhores modelos uncensored aprovados.")
