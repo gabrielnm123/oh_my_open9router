@@ -221,12 +221,11 @@ open(path, "w").write(json.dumps(req))
 PY
 
   local attempt=0 recorded=0 dropped_tool_choice=0
-  local http_code="" ttfb="0" total="0"
+  local http_code="" ttfb="0" total="0" w
 
   while (( attempt < REPEAT )); do
     attempt=$(( attempt + 1 ))
 
-    local w
     w="$(curl -sS -o "$body" \
         -w '%{http_code} %{time_starttransfer} %{time_total}' \
         --max-time "$TIMEOUT" \

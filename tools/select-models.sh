@@ -152,7 +152,7 @@ req = {
 open(sys.argv[1], "w").write(json.dumps(req))
 PY
 
-  local mid body http_code ttfb total tool_ok
+  local mid body http_code ttfb total tool_ok w
   while IFS= read -r mid; do
     [[ -n "$mid" ]] || continue
     body="$(mktemp "${TMPDIR:-/tmp}/native-body.XXXXXX")"
@@ -160,7 +160,6 @@ PY
     # nao aceita POST arbitrario para inferencia; usamos a API publica do
     # provedor com a credencial "public" que o proprio OpenCode usa).
     http_code=0; ttfb=0; total=0; tool_ok=false
-    local w
     # O endpoint aceita o ID do modelo SEM o prefixo do provedor (`beam-free`,
     # nao `opencode/beam-free`); o ID completo fica registrado no JSONL.
     w="$(curl -sS -o "$body" -w '%{http_code} %{time_starttransfer} %{time_total}' \
