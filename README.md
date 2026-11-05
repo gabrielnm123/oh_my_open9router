@@ -462,15 +462,22 @@ funciona com qualquer diretório de trabalho.
 
 O catálogo lista **IDs**, não garantias: um modelo pode aparecer no `/models` e
 responder `403`/`402`/`503` no upstream, ou não suportar tool calling. Atribuir
-um desses a um agente quebra o fluxo. Este comando sonda antes de escolher.
+um desses a um agente quebra o fluxo. Este comando sonda antes de escolher — e
+sonda **sempre o catálogo inteiro**: nada de pool reduzido nem de `probe.jsonl`
+reaproveitado. As flags que encolheriam o universo (`--quick`, `--only-native`,
+`--probe-filter`) são recusadas pelo wrapper.
 
 ```
-/auto_select_models_oh_my_opencode_slim                 # sonda tudo e aplica
-/auto_select_models_oh_my_opencode_slim --dry-run       # só mostra a atribuição
-/auto_select_models_oh_my_opencode_slim --quick         # sonda reduzida (mais rápido)
-/auto_select_models_oh_my_opencode_slim --only-native   # ignora o 9router
-/auto_select_models_oh_my_opencode_slim --no-restart    # grava sem reiniciar o daemon
+/auto_select_models_oh_my_opencode_slim                 # sonda todos e aplica
+/auto_select_models_oh_my_opencode_slim --dry-run       # sonda todos, só mostra
+/auto_select_models_oh_my_opencode_slim --no-restart    # sonda todos, grava sem reiniciar
+/auto_select_models_oh_my_opencode_slim --restart       # sonda todos, grava e reinicia
 ```
+
+Custo: a varredura completa leva dezenas de minutos (201 modelos + nativos, com
+`--max-time 120`). É intencional: escolher a partir de um subconjunto ou de
+dados velhos é o defeito que este comando existe para evitar. Se a sonda
+falhar, o comando **não** aplica nada.
 
 O mesmo instalador (`zsh tools/install-command.sh`) cria:
 
@@ -483,9 +490,12 @@ O mesmo instalador (`zsh tools/install-command.sh`) cria:
 
 Como ele decide:
 
-1. sonda o 9router (`probe-models.sh`) e os modelos **nativos** do OpenCode
-   (`opencode/*`, `gh/*`, `cx/*`, …) com o mesmo teste de `get_weather`;
-2. considera aprovado só `HTTP 200` **e** tool call devolvido;
+1. sonda **todos** os modelos do catálogo do 9router (`probe-models.sh`, sem
+   filtro) e **todos** os nativos do OpenCode (`opencode/*`), com o mesmo teste
+   de `get_weather`;
+2. considera aprovado só `HTTP 200` **e** tool call devolvido, nas duas pontas —
+   nativo que não foi pingado (ou que falhou) fica de fora, mesmo que apareça
+   no catálogo do OpenCode;
 3. classifica por papel (`werkzeug`, `rapido`, `raciocinio`, `visao`,
    `nao_critico`) e escolhe até 3 referências por agente (principal +
    fallbacks), mais os quatro `council/*`;
@@ -497,6 +507,12 @@ Como ele decide:
 Os arquivos de sonda (`probe.jsonl`, `probe-native.jsonl`) ficam ao lado dos
 scripts instalados (`~/.local/share/9router-tools/`) quando o comando roda fora
 do repo, e na raiz do projeto quando roda de dentro dele.
+
+Os nativos são pingados direto no endpoint do provedor (`opencode.ai`, com a
+credencial `public`) usando o ID sem prefixo. Se a cota free estiver esgotada
+(`429 FreeUsageLimitError`), eles **não** entram no pool — a atribuição fica
+inteiramente no 9router. É o comportamento desejado: melhor um pool menor e
+verificado do que um fallback que só quebra em produção.
 
 > Modelos `:free`/`-free` recebem penalidade na pontuação: são o último recurso,
 > nunca a primeira escolha quando há um equivalente pago aprovado.
@@ -539,14 +555,20 @@ zsh tools/probe-models.sh --concurrency 6          # mais paralelismo
 zsh tools/probe-models.sh --repeat 2               # 2 requisições por modelo
 zsh tools/probe-models.sh --models lista.txt       # lista própria
 zsh tools/probe-models.sh --out probe.jsonl        # caminho de saída
+zsh tools/probe-models.sh --remote                # fallback por túnel SSH
+zsh tools/probe-models.sh --remote --server u@host # servidor explícito
 ```
 
 Saída: uma linha JSON por modelo em `probe.jsonl` (gitignored) + relatório
 tabular no stdout.
 
-Regras: a sonda fala **sempre pelo relay público**, nunca direto na porta
-`20128`. `NINEROUTER_BASE_URL` e `NINEROUTER_API_KEY` são obrigatórios —
-vêm do `.env` (carregado por `tools/lib/venice-env.sh`) ou do ambiente.
+Por padrão, a sonda fala pelo relay público, nunca diretamente na porta `20128`.
+Se a API pública não expuser corretamente o catálogo/endpoints, `--remote` abre
+um encaminhamento SSH temporário para `127.0.0.1:20128` no servidor definido por
+`VENICE_STACK_SSH_USER`/`VENICE_STACK_SSH_HOST` no `.env`; `--server u@host`
+permite informar o destino explicitamente. O túnel é encerrado ao sair e não
+grava nem transmite segredos. No modo remoto, `NINEROUTER_API_KEY` continua
+vindo do `.env` local (ou ambiente), e não é lida do servidor.
 
 ---
 

@@ -174,11 +174,18 @@ npx oh-my-opencode-slim@latest doctor
 
 Criar o script de teste de latência e suporte a tool calling (`get_weather`) salvando em `probe.jsonl`.
 
+A sonda é **sempre completa**: catálogo inteiro do 9router + todos os nativos do
+OpenCode, sem filtro e sem `--quick`. Nenhum resultado antigo é reaproveitado.
+
 ---
 
 ## Fase 4 — Atribuição aos Agentes
 
 Configurar os melhores modelos aprovados em `~/.config/opencode/oh-my-opencode-slim.json` para cada papel (orchestrator, oracle, explorer, designer, fixer, observer, council).
+
+Só entra no pool quem foi pingado **e** aprovado (`HTTP 200` + tool call), nas
+duas pontas. Nativo sem sonda válida fica de fora, mesmo presente no catálogo do
+OpenCode. Se a sonda falhar, nada é gravado.
 
 ---
 

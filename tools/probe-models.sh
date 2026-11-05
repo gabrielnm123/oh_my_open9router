@@ -26,6 +26,8 @@
 #   zsh tools/probe-models.sh --out probe.jsonl    # caminho de saida
 #   zsh tools/probe-models.sh --models lista.txt   # sonda uma lista propria
 #   zsh tools/probe-models.sh --quick              # subconjunto representativo
+#   zsh tools/probe-models.sh --remote             # usa tunel SSH para o daemon
+#   zsh tools/probe-models.sh --remote --server usuario@host
 #
 # Variaveis de ambiente:
 #   NINEROUTER_BASE_URL  (obrigatorio; vem do .env da raiz do projeto)
@@ -35,6 +37,7 @@
 #   PROBE_TIMEOUT        (default: 120, segundos por requisicao)
 #   PROBE_REPEAT         (default: 1)
 #   PROBE_QUICK_MODELS   (default: nucleo curado; usado por --quick)
+#   VENICE_STACK_SSH_HOST/USER (usados por --remote; vêm do .env)
 
 set -euo pipefail
 
@@ -59,6 +62,8 @@ MODELS_FILE=""
 FILTER=""
 APPEND=false
 QUICK=false
+REMOTE=false
+SERVER=""
 
 # Nomeadas em `--quick`: cobrem as familias que costumam ser boas em agentes
 # (qualidade, ferramenta, visao, rapidez) sem varrer as centenas de IDs.
@@ -79,6 +84,8 @@ while (( $# > 0 )); do
     --models)      MODELS_FILE="$2"; shift 2 ;;
     --filter)      FILTER="$2";      shift 2 ;;
     --quick)       QUICK=true;       shift ;;
+    --remote)      REMOTE=true;      shift ;;
+    --server)      SERVER="$2"; REMOTE=true; shift 2 ;;
     --append)      APPEND=true;      shift ;;
     -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "opcao desconhecida: $1" >&2; exit 1 ;;
@@ -106,6 +113,28 @@ fi
 [[ -n "$BASE_URL" ]] || die "NINEROUTER_BASE_URL ausente (defina no .env da raiz do projeto)"
 
 BASE_URL="${BASE_URL%/}"
+
+# Quando a API pública está incompleta, faça a mesma sondagem através do
+# daemon privado, sem copiar credenciais para a linha de comando remota. O
+# encaminhamento é local e temporário; o PDF/config do usuário não é tocado.
+SSH_TUNNEL_PID=""
+cleanup_ssh() { [[ -n "$SSH_TUNNEL_PID" ]] && kill "$SSH_TUNNEL_PID" 2>/dev/null || true; }
+if [[ "$REMOTE" == true ]]; then
+  if [[ -z "$SERVER" ]]; then
+    [[ -n "${VENICE_STACK_SSH_HOST:-}" ]] || die "--remote requer VENICE_STACK_SSH_HOST no .env"
+    SERVER="${VENICE_STACK_SSH_USER:+${VENICE_STACK_SSH_USER}@}${VENICE_STACK_SSH_HOST}"
+  fi
+  REMOTE_PORT="${NINEROUTER_REMOTE_PORT:-20128}"
+  LOCAL_PORT="${PROBE_SSH_LOCAL_PORT:-$(( 20000 + RANDOM % 20000 ))}"
+  ssh -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -N -L "${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" "$SERVER" &
+  SSH_TUNNEL_PID=$!
+  trap 'cleanup_ssh' EXIT
+  sleep 1
+  kill -0 "$SSH_TUNNEL_PID" 2>/dev/null || die "falha ao abrir túnel SSH para $SERVER"
+  BASE_URL="http://127.0.0.1:${LOCAL_PORT}/v1"
+  log "sondagem via túnel SSH (${SERVER}, porta remota ${REMOTE_PORT})"
+fi
 
 # ------------------------------------------------------- lista de modelos ----
 

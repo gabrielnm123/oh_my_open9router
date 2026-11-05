@@ -1408,3 +1408,34 @@ sessão, cancelando o comando antes da resposta. O arquivo já estava correto
 Decisão: o comando `.md` chama o seletor com `--no-restart` e instrui o agente
 a avisar que o restart ficou pendente. Fora do TUI, `--restart` continua
 disponível e reinicia na mesma execução.
+
+## 26. Sonda sempre completa no comando `/auto_select_models_oh_my_opencode_slim`
+
+A execução de 2026-11-05 provou o defeito: o pool tinha **16 modelos** (só a
+família `openrouter/*`) porque o `probe.jsonl` era reaproveitado, enquanto o
+catálogo vivo tinha **201**. Os 10 "nativos aprovados" vinham de metadados do
+OpenCode, sem ping — nunca foram testados. Resultado: atribuição "idempotente"
+sobre um universo velho e estreito.
+
+Decisões:
+
+1. `tools/select-models.sh` sonda **sempre** (`RUN_PROBE=true` por padrão);
+   `--quick` virou no-op com aviso. Não existe caminho que aplique a partir de
+   `probe.jsonl` antigo.
+2. O wrapper `auto-select-9router-models` força `--probe` e **recusa**
+   `--quick`, `--only-native` e `--probe-filter` (universo reduzido = defeito).
+   O loop de argumentos virou `while`, corrigindo o `shift` dentro do `for` que
+   quebrava `--server`.
+3. Nativo só entra no pool se foi pingado e aprovado. O `add` incondicional via
+   `native_meta` foi removido; modelos sem sonda válida são listados como aviso.
+4. Sonda do 9router que falha agora **aborta** (`die`) em vez de seguir com
+   dados velhos. Zero aprovados no total também aborta (não grava config vazia).
+5. `probe_native` mandava `opencode/<id>` no campo `model`; o endpoint do
+   provedor espera o ID **sem** prefixo. Corrigido (`split("/",1)[-1]`). Efeito
+   colateral conhecido: com a cota free esgotada (`429 FreeUsageLimitError`),
+   nenhum nativo é aprovado e a atribuição fica só no 9router.
+6. O log do seletor passou a imprimir `testados:` além de `aprovados:` — antes
+   não dava para distinguir pool grande de pool velho.
+
+Custo aceito: a varredura completa leva dezenas de minutos (201 modelos,
+`--max-time 120`, concorrência 8). É o preço de não escolher no escuro.

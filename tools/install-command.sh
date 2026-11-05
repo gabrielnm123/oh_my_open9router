@@ -18,11 +18,14 @@ CMD_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/commands"
 
 REF_CMD="refresh_models_9router"
 SEL_CMD="auto_select_models_oh_my_opencode_slim"
+UNC_CMD="auto_select_uncensored_models"
 
 REF_WRAPPER="${BIN_DIR}/refresh-9router-models"
 SEL_WRAPPER="${BIN_DIR}/auto-select-9router-models"
+UNC_WRAPPER="${BIN_DIR}/auto-select-uncensored-models"
 REF_FILE="${CMD_DIR}/${REF_CMD}.md"
 SEL_FILE="${CMD_DIR}/${SEL_CMD}.md"
+UNC_FILE="${CMD_DIR}/${UNC_CMD}.md"
 
 ACTION="${1:-install}"
 [[ "$ACTION" == "--print" ]] && ACTION="print"
@@ -85,22 +88,41 @@ wrapper_select() {
   cat <<'EOF'
 #!/usr/bin/env zsh
 # GERADO por tools/install-command.sh — não edite à mão.
+#
+# Regra: a sonda é SEMPRE completa — todos os modelos do catálogo do 9router
+# mais todos os nativos do OpenCode, sem filtro e sem subconjunto. As flags que
+# reduziriam o universo (--quick, --only-native, --probe-filter) são recusadas.
+# O resultado é sempre aplicado (com backup), exceto em --dry-run.
 set -euo pipefail
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
-args=(); have_dry=false
-for a in "$@"; do
-  case "$a" in
-    --apply)           ;;
-    --dry-run)         have_dry=true; args+=(--dry-run) ;;
-    --probe)           args+=(--probe) ;;
-    --quick)           args+=(--quick) ;;
-    --only-native)     args+=(--only-native) ;;
-    --no-restart)      args+=(--no-restart) ;;
-    --restart)         args+=(--restart) ;;
-    --probe-filter=*)  args+=(--probe-filter "${a#--probe-filter=}") ;;
-    "")                ;;
-    *)                 print -u2 "auto-select-9router-models: argumento ignorado: $a" ;;
+args=(--probe); have_dry=false
+while (( $# > 0 )); do
+  case "$1" in
+    --apply)        shift ;;
+    --dry-run)      have_dry=true; args+=(--dry-run); shift ;;
+    --probe)        shift ;;
+    --no-restart)   args+=(--no-restart); shift ;;
+    --restart)      args+=(--restart); shift ;;
+    --remote)       args+=(--remote); shift ;;
+    --server)
+        if (( $# < 2 )) || [[ -z "$2" ]]; then
+          print -u2 "auto-select-9router-models: --server exige um valor (usuario@host)"
+          exit 2
+        fi
+        args+=(--server "$2"); shift 2 ;;
+    --server=*)     args+=(--server "${1#--server=}"); shift ;;
+    --quick|--only-native)
+        print -u2 "auto-select-9router-models: $1 ignorado — a sonda é sempre completa (todos os modelos)"
+        shift ;;
+    --probe-filter)
+        print -u2 "auto-select-9router-models: --probe-filter ignorado — a sonda é sempre completa (todos os modelos)"
+        (( $# >= 2 )) && shift; shift ;;
+    --probe-filter=*)
+        print -u2 "auto-select-9router-models: --probe-filter ignorado — a sonda é sempre completa (todos os modelos)"
+        shift ;;
+    "")             shift ;;
+    *)              print -u2 "auto-select-9router-models: argumento ignorado: $1"; shift ;;
   esac
 done
 if [[ "$have_dry" == false ]]; then
@@ -136,10 +158,15 @@ cmd_select() {
 ---
 description: Auto-seleciona os melhores modelos para todos os agentes do oh-my-opencode-slim
 ---
-Pinga e testa todos os modelos disponíveis (9router + nativos do OpenCode),
-escolhe os melhores por papel (orchestrator, oracle, explorer, designer,
-fixer, observer, council + councillors) e aplica no
+Pinga e testa **todos** os modelos disponíveis (catálogo inteiro do 9router +
+todos os nativos do OpenCode), sem filtro e sem subconjunto, escolhe os
+melhores por papel (orchestrator, oracle, explorer, designer, fixer, observer,
+council + councillors) e **sempre aplica** no
 \`~/.config/opencode/oh-my-opencode-slim.json\` com backup.
+
+A varredura completa demora (dezenas de minutos); é o preço de não escolher a
+partir de dados velhos ou de um pool reduzido. \`--quick\`, \`--only-native\` e
+\`--probe-filter\` são ignorados de propósito.
 
 Por padrão o comando **não** reinicia o daemon: reiniciar de dentro do TUI
 derruba a própria sessão (o comando é cancelado antes de responder). Depois de
@@ -157,10 +184,71 @@ Responda em português, curto e sem inventar:
 4. Que o restart do daemon ficou pendente (se houve mudança)
 5. Em caso de erro, diga a causa e o próximo passo
 
+Padrão: sonda completa + aplica, sem restart. Use \`--dry-run\` para sondar
+tudo e só mostrar o diff, \`--restart\` para reiniciar o daemon.
+EOF
+}
+
+wrapper_uncensored() {
+  cat <<'EOF'
+#!/usr/bin/env zsh
+# GERADO por tools/install-command.sh — não edite à mão.
+set -euo pipefail
+SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models-uncensored.sh"
+[[ -r "$SCRIPT" ]] || { print -u2 "auto-select-uncensored-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
+args=(); have_dry=false
+for a in "$@"; do
+  case "$a" in
+    --apply)           ;;
+    --dry-run)         have_dry=true; args+=(--dry-run) ;;
+    --probe)           args+=(--probe) ;;
+    --quick)           args+=(--quick) ;;
+    --only-native)     args+=(--only-native) ;;
+    --no-restart)      args+=(--no-restart) ;;
+    --restart)         args+=(--restart) ;;
+    --probe-filter=*)  args+=(--probe-filter "${a#--probe-filter=}") ;;
+    "")                ;;
+    *)                 print -u2 "auto-select-uncensored-models: argumento ignorado: $a" ;;
+  esac
+done
+if [[ "$have_dry" == false ]]; then
+  args+=(--apply)
+fi
+exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
+EOF
+}
+
+cmd_uncensored() {
+  cat <<EOF
+---
+description: Seleciona modelos menos censurados (cx/, Grok, Nous, Nemotron) para todos os agentes
+---
+Sonda e distribui os modelos mais próximos de "uncensored" disponíveis no
+9router (e nativos), priorizando: **cx/** → **gcli/** (Grok) → **nous/**
+(Hermes/Dolphin) → **kc/nvidia/** (Nemotron) → **ag/** → **kc/** → **gh/**
+→ nativos OpenCode.
+
+Por padrão o comando **não** reinicia o daemon (reiniciar de dentro do TUI
+derruba a própria sessão). Depois de aplicar, rode \`opencode service restart\`.
+Se estiver fora do TUI, use \`--restart\`.
+
+Saída do seletor:
+
+!\`${UNC_WRAPPER} --no-restart \$ARGUMENTS\`
+
+Responda em português, curto e sem inventar:
+1. Quantos testados e quantos aprovados
+2. Família dominante escolhida por agente (ex.: cx/, gcli/, nous/)
+3. Principais mudanças por agente
+4. Caminho do backup caso tenha gravado
+5. Que o restart do daemon ficou pendente (se houve mudança)
+6. Em caso de erro, diga a causa e o próximo passo
+
 Padrão: aplica com \`--no-restart\`. Use \`--dry-run\` para só mostrar,
 \`--quick\` para varredura mais rápida, \`--restart\` para reiniciar o daemon.
 EOF
 }
+
 
 do_install() {
   for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" "${ROOT}/tools/probe-models.sh" "${ROOT}/tools/lib/venice-env.sh"; do
@@ -171,17 +259,20 @@ do_install() {
   install_file "${ROOT}/tools/select-models.sh"  "${DATA_DIR}/select-models.sh"  0755
   install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755
   install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644
+  install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755
   write_generated "$REF_WRAPPER" 0755 wrapper_refresh
   write_generated "$SEL_WRAPPER" 0755 wrapper_select
+  write_generated "$UNC_WRAPPER" 0755 wrapper_uncensored
   write_generated "$REF_FILE"    0644 cmd_refresh
   write_generated "$SEL_FILE"    0644 cmd_select
-  log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD}"
-  log "CLI: ${REF_WRAPPER} --dry-run | ${SEL_WRAPPER} --dry-run"
+  write_generated "$UNC_FILE"    0644 cmd_uncensored
+  log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD} | /${UNC_CMD}"
+  log "CLI: ${REF_WRAPPER} | ${SEL_WRAPPER} | ${UNC_WRAPPER} --dry-run"
 }
 
 do_uninstall() {
   local n=0
-  for f in "$REF_WRAPPER" "$SEL_WRAPPER" "$REF_FILE" "$SEL_FILE"; do
+  for f in "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && { rm -f "$f"; log "removido: $f"; n=1; }
   done
   [[ -d "$DATA_DIR" ]] && { rm -rf "$DATA_DIR"; log "removido: $DATA_DIR"; n=1; }
@@ -190,13 +281,13 @@ do_uninstall() {
 
 do_status() {
   log "repo: $ROOT"
-  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$REF_FILE" "$SEL_FILE"; do
+  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && printf '  [ok]  %s\n' "$f" || printf '  [--]  %s\n' "$f"
   done
 }
 
 do_print() {
-  echo "### $REF_WRAPPER"; wrapper_refresh; echo; echo "### $SEL_WRAPPER"; wrapper_select; echo; echo "### $REF_FILE"; cmd_refresh; echo; echo "### $SEL_FILE"; cmd_select
+  echo "### $REF_WRAPPER"; wrapper_refresh; echo; echo "### $SEL_WRAPPER"; wrapper_select; echo; echo "### $UNC_WRAPPER"; wrapper_uncensored; echo; echo "### $REF_FILE"; cmd_refresh; echo; echo "### $SEL_FILE"; cmd_select; echo; echo "### $UNC_FILE"; cmd_uncensored
 }
 
 case "$ACTION" in

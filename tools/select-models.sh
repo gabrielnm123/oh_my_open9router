@@ -20,14 +20,19 @@
 #   nao_critico  = qualquer aprovado; velocidade
 #
 # Uso:
-#   zsh tools/select-models.sh                   # dry-run (mostra o diff)
-#   zsh tools/select-models.sh --apply           # grava + reinicia o daemon
-#   zsh tools/select-models.sh --probe           # roda a sonda antes
-#   zsh tools/select-models.sh --quick           # sonda rapida (~2min) e aplica
-#   zsh tools/select-models.sh --only-native     # ignora o 9router (so opencode/*)
-#   zsh tools/select-models.sh --no-restart      # grava sem reiniciar o daemon
-#   zsh tools/select-models.sh --probe-filter 'ag/,cx/'   # sonda so esses prefixos
+#   zsh tools/select-models.sh                   # sonda TUDO e mostra o diff
+#   zsh tools/select-models.sh --apply           # sonda tudo, grava e reinicia
+#   zsh tools/select-models.sh --no-restart      # sonda tudo, grava sem reiniciar
+#   zsh tools/select-models.sh --dry-run         # sonda tudo (nada e gravado)
+#   zsh tools/select-models.sh --probe-only      # sonda tudo, nao grava
+#   zsh tools/select-models.sh --only-native     # debug: ignora o 9router
+#   zsh tools/select-models.sh --probe-filter 'ag/'   # debug: sonda parcial
+#   zsh tools/select-models.sh --remote          # sonda via tunel SSH
 #   zsh tools/select-models.sh --config <path>   # outro oh-my-opencode-slim.json
+#
+# A sonda roda SEMPRE (nao existe reaproveitar probe.jsonl antigo): o pool e
+# montado a partir do catalogo vivo + dos nativos, sem excecao. Nada de
+# selecionar a partir de dados velhos.
 #
 # Idempotente: mesma sonda -> mesma atribuicao. Backup antes de gravar.
 
@@ -49,12 +54,15 @@ NATIVE_OUT="${ROOT}/probe-native.jsonl"
 CONFIG="${HOME}/.config/opencode/oh-my-opencode-slim.json"
 APPLY=false
 RESTART=true
-RUN_PROBE=false
+# A sonda roda sempre: o pool nunca vem de probe.jsonl reaproveitado.
+RUN_PROBE=true
 PROBE_ONLY=false
 PROBE_FILTER=""
-PROBE_CONCURRENCY="${PROBE_CONCURRENCY:-6}"
+PROBE_CONCURRENCY="${PROBE_CONCURRENCY:-8}"
 QUICK=false
 ONLY_NATIVE=false
+REMOTE=false
+SERVER=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -63,9 +71,11 @@ while (( $# > 0 )); do
     --no-restart)   RESTART=false; shift ;;
     --restart)      RESTART=true;  shift ;;
     --probe)        RUN_PROBE=true; shift ;;
-    --probe-only)   RUN_PROBE=true; PROBE_ONLY=true; APPLY=false; shift ;;
-    --quick)        QUICK=true; RUN_PROBE=true; PROBE_CONCURRENCY=8; shift ;;
+    --probe-only)   PROBE_ONLY=true; APPLY=false; shift ;;
+    --quick)        printf '[select] AVISO: --quick ignorado — a sonda é sempre completa\n' >&2; shift ;;
     --only-native)  ONLY_NATIVE=true; shift ;;
+    --remote)       REMOTE=true; shift ;;
+    --server)       SERVER="$2"; REMOTE=true; shift 2 ;;
     --probe-filter) PROBE_FILTER="$2"; shift 2 ;;
     --probe-out)    PROBE_OUT="$2"; shift 2 ;;
     --native-out)   NATIVE_OUT="$2"; shift 2 ;;
@@ -83,18 +93,23 @@ die()  { printf '[select] ERRO: %s\n' "$*" >&2; exit 1; }
 
 probe_9router() {
   local extra=()
-  [[ -n "$PROBE_FILTER" ]] && extra=(--filter "$PROBE_FILTER")
-  [[ "$QUICK" == true ]] && extra+=(--quick)
+  # Filtro/quick so existem como ferramenta de debug; o comando oficial nunca
+  # passa por aqui com universo reduzido.
+  [[ -n "$PROBE_FILTER" ]] && { warn "--probe-filter '${PROBE_FILTER}': pool parcial (debug)"; extra=(--filter "$PROBE_FILTER"); }
+  [[ "$REMOTE" == true ]] && extra+=(--remote)
+  [[ -n "$SERVER" ]] && extra+=(--server "$SERVER")
   log "sondando o 9router (concurrency=${PROBE_CONCURRENCY})..."
   zsh "${TOOLS_DIR}/probe-models.sh" \
       --concurrency "$PROBE_CONCURRENCY" --out "$PROBE_OUT" "${extra[@]}" \
-      || warn "a sonda do 9router falhou; seguindo com o que ja existir em $PROBE_OUT"
+      || die "sonda do 9router falhou; nao aplico com dados antigos (veja o erro acima)"
 }
 
 # Os modelos nativos do OpenCode (free) nao passam pelo 9router: precisam da sua
 # propria sonda, com o mesmo teste de tool calling, mas direto no provedor.
 probe_native() {
-  local ids
+  local ids=""
+  # Nao deixar uma falha aqui matar o script inteiro (set -e): sem nativos, o
+  # pool segue so com o 9router, mas o comando aplica e responde.
   ids="$(opencode api get /api/model 2>/dev/null | python3 -c '
 import json,sys
 try:
@@ -103,8 +118,8 @@ except Exception:
     raise SystemExit(0)
 for m in d.get("data", []):
     if m.get("providerID") and m["providerID"] != "9router" and m.get("id"):
-        print(f"{m[\"providerID\"]}/{m[\"id\"]}")
-' 2>/dev/null)"
+        print(m["providerID"] + "/" + m["id"])
+' 2>/dev/null)" || ids=""
 
   if [[ -z "$ids" ]]; then
     warn "nenhum modelo nativo do OpenCode encontrado; so o 9router sera considerado"
@@ -146,10 +161,12 @@ PY
     # provedor com a credencial "public" que o proprio OpenCode usa).
     http_code=0; ttfb=0; total=0; tool_ok=false
     local w
+    # O endpoint aceita o ID do modelo SEM o prefixo do provedor (`beam-free`,
+    # nao `opencode/beam-free`); o ID completo fica registrado no JSONL.
     w="$(curl -sS -o "$body" -w '%{http_code} %{time_starttransfer} %{time_total}' \
         --max-time 60 -X POST "https://opencode.ai/inference/openai/v1/chat/completions" \
         -H 'Authorization: Bearer public' -H 'Content-Type: application/json' \
-        -d "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["model"]=sys.argv[2]; print(json.dumps(d))' "$payload" "$mid")" \
+        -d "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["model"]=sys.argv[2].split("/",1)[-1]; print(json.dumps(d))' "$payload" "$mid")" \
         2>/dev/null)" || w="0 0 0"
     read -r http_code ttfb total <<< "$w"
     grep -q '"name"[[:space:]]*:[[:space:]]*"get_weather"' "$body" 2>/dev/null && tool_ok=true
@@ -353,20 +370,31 @@ REQUIRES = {
     "nao_critico": lambda mid: True,
 }
 
-# Universo: 9router + nativos do OpenCode.
+# Universo: 9router + nativos do OpenCode, ambos SO a partir da sonda.
+# Nenhum modelo entra por metadados: se nao foi pingado e aprovado, fica fora.
 universe = set()
 for mid, r in probes.items():
     if approved(r):
         universe.add(mid)
-for mid in native_meta:
-    if mid not in universe:
-        universe.add(mid)
+
+nao_sonados = sorted(m for m in native_meta if m not in probes)
+if nao_sonados:
+    log(f"AVISO: {len(nao_sonados)} nativo(s) sem sonda valida; ficam fora: "
+        + ", ".join(nao_sonados[:5]) + ("..." if len(nao_sonados) > 5 else ""))
+
 if only_native:
     universe = {m for m in universe if not m.startswith("9router/")}
+
+if not universe:
+    raise SystemExit("[select] ERRO: nenhum modelo aprovado na sonda; config nao alterado")
 
 by_tier = {0: [], 1: []}
 for mid in universe:
     by_tier[tier(mid)].append(mid)
+
+testados_9 = sum(1 for m in probes if m.startswith("9router/"))
+testados_nativo = len(probes) - testados_9
+log(f"testados: {testados_9} no 9router · {testados_nativo} nativos do OpenCode")
 
 log(f"aprovados: {len(by_tier[0])} no 9router · {len(by_tier[1])} nativos do OpenCode"
     + (" (--only-native: 9router ignorado)" if only_native else ""))
