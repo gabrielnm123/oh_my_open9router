@@ -8,7 +8,16 @@ set -euo pipefail
 source "${0:A:h}/lib/venice-env.sh"
 
 PROBE_OUT="probe.jsonl"
-CONFIG="${HOME}/.config/opencode/oh-my-opencode-slim.json"
+# O plugin resolve `oh-my-opencode-slim.jsonc` ANTES de `.json`, e e o `.jsonc`
+# que o instalador cria. Escolher o candidato errado grava num arquivo que o
+# plugin ignora (o `--config` de select-models.sh cobre o mesmo caso).
+_oc_dir="${HOME}/.config/opencode"
+if [[ -f "${_oc_dir}/oh-my-opencode-slim.jsonc" ]]; then
+  CONFIG="${_oc_dir}/oh-my-opencode-slim.jsonc"
+else
+  CONFIG="${_oc_dir}/oh-my-opencode-slim.json"
+fi
+unset _oc_dir
 APPLY=false
 
 [[ "${1:-}" == "--apply" ]] && APPLY=true

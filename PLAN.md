@@ -1477,3 +1477,159 @@ Decisões:
 
 Custo: cada execução real escreve duas vezes (merge da sonda + assignment por
 agente/councillor) num arquivo pequeno; nada de rede.
+
+# 28. Retomada em máquina nova: o que faltava e a rede filtrada
+
+Estado encontrado: o repositório estava completo, mas a **máquina** não. O
+`.env` real tinha só cinco valores preenchidos (host, usuário e passphrase do
+SSH, `NINEROUTER_BASE_URL` e `NINEROUTER_RELAY_HOST`); as três credenciais
+(`NINEROUTER_API_KEY`, `NINEROUTER_ADMIN_PASSWORD`, `NINEROUTER_JWT_SECRET`)
+ainda eram placeholders, e nada da Fase 0 local / Fase 1 existia fora do repo.
+
+## 28.1 Divergências corrigidas
+
+| # | Divergência | Correção |
+| :--- | :--- | :--- |
+| D14 | `NINEROUTER_RELAY_HOST` gravado com esquema (`https://host`); o contrato do README é host puro | normalizado para `host`; `NINEROUTER_BASE_URL` já é a forma com esquema e `/v1` |
+| D15 | `.env` estava `644` | `chmod 600` |
+| D16 | `~/.zshrc` recebeu o bloco `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` do instalador (contra a regra do AGENTS.md) | bloco movido para `~/.zshenv`; `~/.zshrc` limpo |
+| D17 | README §4 exportava `NINEROUTER_API_KEY` **literal** no `~/.zshenv`, contradizendo "nenhum segredo fora do arquivo canônico" | o `~/.zshenv` lê a chave do arquivo canônico e **descarta placeholders** (exportar `sk-xxxx…` é pior que não exportar: vira 401 em vez de "chave ausente") |
+| D18 | `~/.local/bin` não estava no `PATH`, então os wrappers do `install-command.sh` não eram encontráveis | export no `~/.zshenv` |
+
+## 28.2 O que foi aplicado
+
+1. `~/.config/venice-stack/9router.env` (700/600) criado como cópia canônica do `.env`.
+2. `~/.zshenv` (600) criado com: askpass + ssh-agent (Fase 0.0), leitura do
+   arquivo canônico (Fase 0.5), `PATH` e os exports do oh-my-opencode-slim.
+3. `~/.config/opencode/opencode.json` ganhou `providers.9router` com
+   `baseURL`/`apiKey` por `{env:…}` e `models` **vazio** — o catálogo é
+   preenchido por `tools/sync-catalog.sh` quando a API key existir. Config
+   validada: `opencode models` continua saindo com `0`.
+4. `tools/install-command.sh install`: 6 scripts em `~/.local/share/9router-tools/`,
+   3 wrappers em `~/.local/bin/`, 3 comandos de barra em `~/.config/opencode/commands/`.
+5. `npx oh-my-opencode-slim doctor` → exit `0` (`[preset] opencode-free ✓`).
+
+## 28.3 A rede desta máquina (WSL2 atrás de resolver corporativo)
+
+Descoberta que explica "o túnel só funciona com VPN": o resolver local
+(`10.255.255.254`, domínio `seas.local`) **filtra** o domínio do relay e
+devolve o IP da block page do FortiGuard (cert
+`CN=Fortiguard SDNS Blocked Page`). O host real é Cloudflare
+(obtido por DoH) e responde `401` em
+`/v1/models` — ou seja, **o túnel está no ar e alcançável sem VPN**; só o nome
+é que mente. A porta 22 do servidor está bloqueada fora da VPN (firewall), por
+isso a Fase 0/5 continua exigindo VPN.
+
+Ferramentas novas (ambas zsh, sem host hardcoded, lendo o `.env`):
+
+- `tools/net-diag.sh` — separa DNS / TCP / TLS / HTTP por host, compara a
+  resolução local com a real (DoH) e dá um veredito (`DNS_FILTRADO`,
+  `TCP_BLOQUEADO`, `TLS_INTERCEPTADO`, `OK (HTTP 401)`…). Só leitura.
+- `tools/pin-host.sh` — fixa o IP real do relay em `/etc/hosts` num bloco
+  marcado (`--status`/`--dry-run`/`--refresh`/`--undo`), sem trocar o resolver
+  da máquina (o que quebraria `seas.local`). Detecta WSL e avisa que
+  `/etc/hosts` é regenerado sem `generateHosts = false` em `/etc/wsl.conf`.
+
+Decisão: **não** trocar o resolver global nem usar `--resolve` no provider —
+o primeiro quebra nomes internos, o segundo não é suportado pelo OpenCode.
+
+## 28.4 Por que a VPN derruba os modelos (medido)
+
+A VPN é o **ProtonVPN rodando no Windows**, com o WSL2 em NAT. Com ela ligada,
+o `opencode.ai` resolve e conecta normalmente, mas a requisição volta com
+`Free usage limit reached. Free models work in OpenCode`. Não é DNS nem
+firewall: a cota do free tier do OpenCode Zen é contada por **IP de saída**, e
+o IP compartilhado do túnel VPN já está estourado. Nenhum ajuste local no
+cliente muda isso.
+
+Consequência de desenho: o caminho certo não é "fazer o free tier funcionar
+com VPN", é **parar de depender dele**. Com os papéis apontando para modelos do
+9router, os agentes não tocam em `opencode.ai` e o estado da VPN deixa de
+importar (o relay é Cloudflare na 443 e atravessa o túnel VPN normalmente).
+
+## 28.5 `tools/vpn-window.sh` — servidor em uma janela de VPN
+
+O SSH (porta 22) continua bloqueado fora da VPN, e a VPN derruba o agente.
+Para não exigir troca de contexto manual, o script faz **toda** a coleta de
+servidor em uma execução não interativa:
+
+1. deriva o token CLI (`sha256(machine-id + "9r-cli-auth" + cli-secret)[:16]`);
+2. `GET /api/keys` com o token CLI; se não vier `200`, faz login com
+   `INITIAL_PASSWORD` e repete com o cookie `auth_token`;
+3. `GET /api/tunnel/status` → `publicUrl` (relay canônico) e `tunnelUrl`;
+4. lê `JWT_SECRET` e `INITIAL_PASSWORD` de `~/.9router/.env`, e `hostname`;
+5. grava **só** o que está vazio/placeholder (`.env` + cópia canônica, 600),
+   reportando `SKIP` para valor real divergente (a menos que `--force`);
+6. roda `sync-catalog.sh --apply` para preencher `providers.9router.models`.
+
+Decisão: o script **não** roda a sonda nem a atribuição. Essas não precisam de
+VPN (o relay responde direto depois do pin) e levam dezenas de minutos; rodar
+tudo dentro da janela de VPN aumentaria o tempo em que o agente fica fora do ar.
+
+## 28.6 Execução (sem VPN, pela API pública do túnel)
+
+A janela de VPN não foi necessária: com o pin do §15.1, o túnel responde na 443
+e as rotas autenticadas funcionaram pelo relay.
+
+| Passo | Resultado |
+| :--- | :--- |
+| `GET /v1/models` com a API key do cliente | `200`, 216 modelos |
+| `POST /api/auth/login` (cookie `auth_token`) | `200` |
+| `GET /api/keys` | 1 chave ativa, `access.restricted=false` |
+| `GET /api/tunnel/status` | `publicUrl` = o mesmo relay do `.env`; `tunnelUrl` novo |
+| `GET /api/settings` | `requireApiKey=true`, `requireLogin=true`, `tunnelProvider=cloudflare` |
+| `GET /api/version` | `0.5.112` (existe `0.5.116`) |
+| `sync-catalog.sh --apply` | `providers.9router.models` = 216; `opencode models` → 228 (216 + 12 nativos) |
+
+Descoberta de configuração (D19): o plugin resolve
+`oh-my-opencode-slim.jsonc` **antes** de `.json`, mas `select-models.sh`,
+`select-models-uncensored.sh` e `sync-models.sh` apontavam para `.json` por
+padrão. Numa máquina cujo instalador criou `.jsonc`, isso gravaria a atribuição
+num arquivo que o plugin ignora. Corrigido: os três scripts agora preferem
+`.jsonc` quando ele existe.
+
+Descoberta de operação (D20): `opencode service start` **não substitui** um
+daemon já em execução (o daemon costuma ter sido subido pela extensão do VS
+Code, com env mínimo). Persistir o env no `service.json` é necessário mas não
+suficiente — o daemon vivo só o recolhe num `opencode service restart`, e esse
+restart derruba a sessão do TUI que o pediu. Por isso o restart é o **último**
+passo, feito de fora da sessão do agente.
+
+## 28.7 Sonda e atribuição (executadas)
+
+| Etapa | Resultado |
+| :--- | :--- |
+| Sonda 9router | 216 modelos · 50 aprovados (200 + tool call) |
+| Sonda nativa | 12 modelos · 0 aprovados |
+| Pesquisa por papel | 23 registros `(modelo, papel)` no `model-history.json` |
+| Atribuição | 7 agentes + 4 assentos de council, 100% `9router/*` |
+| Preset | renomeado de `opencode-free` para `9router` |
+| Conselho `diverse` | Anthropic / DeepSeek / Google / Moonshot |
+| `npx oh-my-opencode-slim doctor` | `[preset] 9router ✓` |
+| `opencode models` | 228 (216 + 12 nativos) |
+| Inferência real | `opencode run --model 9router/ag/claude-sonnet-4-6` → `OK` |
+
+### 28.7.1 Quatro defeitos encontrados no caminho
+
+Todos silenciosos: nenhum deles dava erro, apenas faziam o seletor ignorar o
+que deveria usar.
+
+| # | Defeito | Efeito | Correção |
+| :--- | :--- | :--- | :--- |
+| D21 | `hscore()` comparava o id prefixado do universo (`9router/ag/...`) com a chave crua do histórico (`ag/...`) | **toda** nota de pesquisa era perdida; a Fase 4 virava decoração | normalizar com `bare()` na leitura |
+| D22 | `stale_candidates()` fazia a mesma comparação e devolvia o id sem prefixo | modelo aprovado entrava como 4º fallback com referência inválida (`ag/...`, sem provedor) | normalizar e emitir o id completo |
+| D23 | `select-models.sh` chamava o `model-history.sh` **instalado**, que resolve o arquivo a partir da própria pasta | leitura de um `model-history.json` diferente (ou inexistente) do que estava sendo escrito | pinar `MODEL_HISTORY` no env dos subprocessos |
+| D24 | `record` grava id cru, `merge` grava id prefixado → duas entradas para o mesmo modelo | pesquisa em uma entrada, sonda em outra | `score` agrega por id canônico |
+
+Além disso, duas ordens de categoria estavam erradas por construção:
+`designer` era `werkzeug`-primeiro (herdava a cadeia de texto do `fixer`, apesar
+de o papel receber imagem) e `council/optimiser` era `werkzeug`-primeiro (mesma
+cadeia do `reviewer`, anulando a diversidade do consenso). Corrigidas para
+`visao`-primeiro e `rapido`-primeiro.
+
+## 28.8 Pendente
+
+`opencode service restart` a partir de um shell com o `~/.zshenv` carregado.
+O `service.json` já tem as três variáveis persistidas, mas o daemon vivo foi
+subido por um processo sem o `~/.zshenv` — só o restart o recria com o env.
+Atenção: o restart derruba a sessão do TUI que o pediu (D20).

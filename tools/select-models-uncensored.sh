@@ -81,7 +81,14 @@ done
 # ----------------------------------------------------------------- sonda ----
 probe_path="${ROOT}/probe.jsonl"
 native_path="${ROOT}/probe-native.jsonl"
-config_path="${config_path:-${HOME}/.config/opencode/oh-my-opencode-slim.json}"
+_oc_dir="${HOME}/.config/opencode"
+if [[ -f "${_oc_dir}/oh-my-opencode-slim.jsonc" ]]; then
+  _oc_default="${_oc_dir}/oh-my-opencode-slim.jsonc"
+else
+  _oc_default="${_oc_dir}/oh-my-opencode-slim.json"
+fi
+config_path="${config_path:-${_oc_default}}"
+unset _oc_dir _oc_default
 # O catálogo é buscado ao vivo (mesmo que o select-models.sh), nunca de um
 # arquivo local antigo: um modelo pode sair do catálogo sem sair da sonda.
 catalog_path="$(mktemp "${TMPDIR:-/tmp}/select-uncensored-catalog.XXXXXX")"

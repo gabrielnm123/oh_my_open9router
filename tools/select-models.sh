@@ -73,6 +73,9 @@ while (( $# > 0 )); do
     --no-restart)   RESTART=false; shift ;;
     --restart)      RESTART=true;  shift ;;
     --probe)        RUN_PROBE=true; shift ;;
+    # Recuperacao: a sonda ja rodou por completo e so a etapa de gravacao falhou.
+    # NAO e o fluxo normal (o projeto exige sonda fresca); por isso e explicito.
+    --reuse-probe)  RUN_PROBE=false; shift ;;
     --probe-only)   PROBE_ONLY=true; APPLY=false; shift ;;
     --quick)        printf '[select] AVISO: --quick ignorado — a sonda é sempre completa\n' >&2; shift ;;
     --only-native)  ONLY_NATIVE=true; shift ;;
@@ -202,6 +205,11 @@ PY
 if [[ "$RUN_PROBE" == true ]]; then
   [[ "$ONLY_NATIVE" == false ]] && probe_9router
   probe_native
+else
+  # --reuse-probe: recuperacao de uma execucao cuja sonda ja foi completa.
+  [[ -s "$PROBE_OUT" ]]  || die "--reuse-probe: ${PROBE_OUT} ausente ou vazio"
+  [[ -s "$NATIVE_OUT" ]] || die "--reuse-probe: ${NATIVE_OUT} ausente ou vazio"
+  warn "--reuse-probe: reaproveitando ${PROBE_OUT} (recuperacao; o fluxo normal sempre sonda)"
 fi
 
 [[ "$PROBE_ONLY" == true ]] && { log "somente sonda (--probe-only); nada foi gravado."; exit 0; }
@@ -227,7 +235,7 @@ fi
 
 python3 - "$PROBE_OUT" "$NATIVE_OUT" "$CATALOG" "$CONFIG" "$APPLY" "$RESTART" "$ONLY_NATIVE" \
          "$HISTORY" "$HISTORY_ENABLED" "${TOOLS_DIR}/model-history.sh" <<'PY'
-import json, os, shutil, sys, subprocess, time
+import json, os, re, shutil, sys, subprocess, time
 
 (probe_path, native_path, catalog_path, config_path,
  apply_s, restart_s, only_native_s, history_path, history_enabled_s,
@@ -409,7 +417,9 @@ AGENT_PROFILES = {
     "orchestrator":  ["werkzeug", "raciocinio", "nao_critico"],
     "oracle":        ["raciocinio", "werkzeug", "nao_critico"],
     "explorer":      ["rapido", "werkzeug", "nao_critico"],
-    "designer":      ["werkzeug", "visao", "nao_critico"],
+    # designer trabalha a partir de screenshot/mockup: visao vem primeiro,
+    # senao o papel herda a mesma cadeia de texto do fixer/orchestrator.
+    "designer":      ["visao", "werkzeug", "nao_critico"],
     "fixer":         ["werkzeug", "raciocinio", "nao_critico"],
     "observer":      ["visao", "werkzeug", "nao_critico"],
     "council":       ["werkzeug", "raciocinio", "nao_critico"],
@@ -418,7 +428,9 @@ AGENT_PROFILES = {
 COUNCIL_PROFILES = {
     "architect": ["raciocinio", "werkzeug", "nao_critico"],
     "reviewer":  ["werkzeug", "raciocinio", "nao_critico"],
-    "optimiser": ["werkzeug", "rapido", "nao_critico"],
+    # optimiser julga latencia/perf: a categoria rapida vem primeiro, senao ele
+    # herda a mesma cadeia do reviewer e o conselho perde diversidade.
+    "optimiser": ["rapido", "werkzeug", "nao_critico"],
     "visual":    ["visao", "werkzeug", "nao_critico"],
 }
 
@@ -438,6 +450,11 @@ for _agent, _profiles in AGENT_PROFILES.items():
 for _name, _profiles in COUNCIL_PROFILES.items():
     CAT_AGENTS.setdefault(_profiles[0], []).append("council/" + _name)
 
+# O model-history.sh instalado em ~/.local/share/9router-tools resolve o
+# arquivo a partir da propria pasta; sem pinar MODEL_HISTORY ele leria um
+# historico diferente (ou inexistente) do que este script esta usando.
+HIST_ENV = dict(os.environ, MODEL_HISTORY=history_path)
+
 hist = {}
 if history_on and os.path.exists(history_path):
     for _cat, _agents in CAT_AGENTS.items():
@@ -445,7 +462,7 @@ if history_on and os.path.exists(history_path):
             _r = subprocess.run(
                 ["zsh", history_sh, "score", "--role", _cat,
                  "--agents", ",".join(_agents)],
-                capture_output=True, text=True, timeout=30)
+                capture_output=True, text=True, timeout=30, env=HIST_ENV)
             hist[_cat] = json.loads(_r.stdout or "{}")
         except Exception as _exc:
             log(f"AVISO: historico indisponivel para '{_cat}' ({_exc})")
@@ -454,7 +471,11 @@ if history_on and os.path.exists(history_path):
         log(f"historico: {history_path}")
 
 def hscore(mid, cat):
-    e = (hist.get(cat) or {}).get(mid) or {}
+    # `mid` vem do universo com o prefixo do provedor (`9router/ag/...`), mas o
+    # historico grava o id cru (`ag/...`). Sem normalizar, toda nota de pesquisa
+    # era perdida e o seletor ignorava o passo de pesquisa da Fase 4.
+    h = hist.get(cat) or {}
+    e = h.get(mid) or h.get(bare(mid)) or {}
     return float(e.get("research") or 0.0), int(e.get("assigned") or 0)
 
 def stale_candidates(cat):
@@ -462,12 +483,17 @@ def stale_candidates(cat):
     Ficam como fallback para nao perder um bom modelo por uma sonda ruim."""
     out = []
     for mid, e in (hist.get(cat) or {}).items():
-        if mid in universe:
+        # O historico grava o id SEM o prefixo do provedor (`ag/...`), enquanto
+        # `universe` guarda o id completo (`9router/ag/...`). Comparar cru fazia
+        # TODO modelo com pesquisa >= 0.7 parecer "ausente da sonda" e entrar
+        # como 4o fallback invalido, sem o prefixo.
+        full_id = mid if mid.startswith("9router/") else "9router/" + mid
+        if full_id in universe or mid in universe:
             continue
         research = float(e.get("research") or 0.0)
         ok, fail = int(e.get("ok") or 0), int(e.get("fail") or 0)
         if research >= 0.7 or (ok >= 2 and ok > fail):
-            out.append((-research, -(ok - fail), mid))
+            out.append((-research, -(ok - fail), full_id))
     return [m for _r, _d, m in sorted(out)]
 
 stale_picked = []
@@ -481,6 +507,11 @@ for cat, key in CATEGORIES.items():
     # Ordena por tier primeiro: 9router antes de nativo, sempre.
     pools[cat] = sorted(pool, key=lambda m: (tier(m), -_score(m), m))
     log(f"pool {cat:<12}: {len(pool):>3} modelos")
+
+if os.environ.get("SELECT_DEBUG_POOLS"):
+    for _cat in CATEGORIES:
+        log(f"pool {_cat} top5: " + ", ".join(
+            f"{bare(m)}[r={hscore(m, _cat)[0]}]" for m in pools[_cat][:5]))
 
 for cat in ("raciocinio", "visao"):
     if not pools[cat]:
@@ -520,7 +551,49 @@ def full(mid):
 def ref(mid):
     return mid if mid.startswith("9router/") else mid
 
-config = json.load(open(config_path))
+def load_jsonc(path):
+    """Le JSON puro OU JSONC (comentarios // e /* */ e virgula final).
+
+    O plugin resolve `oh-my-opencode-slim.jsonc` antes de `.json`, e o `.jsonc`
+    do instalador vem cheio de comentarios — json.load nao aceita nenhum deles.
+    """
+    raw = open(path).read()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    out, i, n = [], 0, len(raw)
+    in_str = esc = False
+    while i < n:
+        c = raw[i]
+        if in_str:
+            out.append(c)
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if c == "/" and i + 1 < n and raw[i + 1] == "/":
+            while i < n and raw[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and raw[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (raw[i] == "*" and raw[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c); i += 1
+    text = "".join(out)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    return json.loads(text)
+
+config = load_jsonc(config_path)
 preset_name = config.get("preset", "9router")
 preset = config.setdefault("presets", {}).setdefault(preset_name, {})
 
@@ -588,7 +661,7 @@ if history_on and apply:
         _r = subprocess.run(
             ["zsh", history_sh, "merge",
              "--probe", probe_path, "--native", native_path],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=60, env=HIST_ENV)
         for line in (_r.stdout or "").splitlines():
             if line.strip():
                 log(line.replace("[history] ", "historico: "))
@@ -598,14 +671,14 @@ if history_on and apply:
                 subprocess.run(
                     ["zsh", history_sh, "assignment", "--agent", agent,
                      "--models", ",".join(chain)],
-                    capture_output=True, text=True, timeout=30)
+                    capture_output=True, text=True, timeout=30, env=HIST_ENV)
         for name in COUNCIL_PROFILES:
             model = council.get("default", {}).get(name, {}).get("model")
             if model:
                 subprocess.run(
                     ["zsh", history_sh, "assignment", "--agent", "council/" + name,
                      "--models", model],
-                    capture_output=True, text=True, timeout=30)
+                    capture_output=True, text=True, timeout=30, env=HIST_ENV)
         log(f"historico atualizado: {history_path}")
     except Exception as exc:
         log(f"AVISO: falha ao atualizar o historico ({exc})")

@@ -217,24 +217,40 @@ ASKPASS
   fi
 fi
 
+# --- PATH dos wrappers instalados por tools/install-command.sh --------------
+export PATH="${HOME}/.local/bin:${PATH}"
+
 # --- contexto do servidor e do provider (Fase 0.5) ---------------------------
-# Host, usuario e URL base sao lidos do arquivo canonico de segredos em tempo
-# de execucao. Nenhum valor literal aqui: o .env do projeto e a fonte da
-# verdade, e este arquivo e a copia canonica local dele.
+# Host, usuario, URL base E chave sao lidos do arquivo canonico de segredos em
+# tempo de execucao. Nenhum valor literal aqui — nem a API key.
 _vs_secrets="${HOME}/.config/venice-stack/9router.env"
 if [[ -r "$_vs_secrets" ]]; then
   _vs_get() {
     grep -m1 "^$1=" "$_vs_secrets" | cut -d= -f2- | tr -d "\r" | sed -E "s/^'//; s/'$//"
   }
-  export VENICE_STACK_SSH_HOST="$(_vs_get VENICE_STACK_SSH_HOST)"
-  export VENICE_STACK_SSH_USER="$(_vs_get VENICE_STACK_SSH_USER)"
-  export NINEROUTER_BASE_URL="$(_vs_get NINEROUTER_BASE_URL)"
-  unset -f _vs_get
+  # Placeholder do .env.example NAO e exportado: exportar um placeholder e pior
+  # que nao exportar nada (vira 401 em vez de "chave ausente").
+  _vs_real() {
+    case "$1" in
+      ''|*troque-*|*exemplo-*|sk-xxxx*|0123456789abcdef*) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  _vs_export() {
+    local _v
+    _v="$(_vs_get "$1")"
+    _vs_real "$_v" && export "$1=$_v"
+  }
+  _vs_export VENICE_STACK_SSH_HOST
+  _vs_export VENICE_STACK_SSH_USER
+  _vs_export NINEROUTER_BASE_URL
+  _vs_export NINEROUTER_RELAY_HOST
+  _vs_export NINEROUTER_API_KEY
+  _vs_export NINEROUTER_ADMIN_PASSWORD
+  _vs_export NINEROUTER_JWT_SECRET
+  unset -f _vs_get _vs_real _vs_export
 fi
 unset _vs_secrets
-
-# --- provider 9router -------------------------------------------------------
-export NINEROUTER_API_KEY="<chave-de-cliente-do-9router>"
 ```
 
 E o arquivo canônico de segredos:
@@ -617,59 +633,96 @@ vindo do `.env` local (ou ambiente), e não é lida do servidor.
 
 ## 9. Fase 4 — Atribuição dos modelos aos papéis
 
-Configure `~/.config/opencode/oh-my-opencode-slim.json`:
+> **Nome do arquivo:** o plugin resolve `oh-my-opencode-slim.jsonc` **antes** de
+> `.json` (é o `.jsonc` que o instalador cria). Grave sempre no mesmo arquivo
+> que existe na máquina — os scripts de `tools/` já detectam `.jsonc`
+> automaticamente, mas um `--config` explícito nunca erra. Gravar num `.json`
+> enquanto o `.jsonc` existe produz uma atribuição que o plugin ignora.
+
+A atribuição não é escrita à mão: `tools/select-models.sh` a deriva da sonda +
+do histórico de pesquisa (ver §9.2). O resultado aplicado nesta máquina, com o
+preset renomeado para `9router` (não há mais nenhum modelo `opencode/*` no
+caminho crítico):
 
 ```json
 {
-  "$schema": "https://unpkg.com/oh-my-opencode-slim@latest/oh-my-opencode-slim.schema.json",
   "preset": "9router",
-  "image_routing": "auto",
   "presets": {
     "9router": {
-      "orchestrator": { "model": ["9router/ag/claude-sonnet-4-6", "…"] },
-      "oracle":       { "model": ["9router/ag/claude-opus-4-6-thinking", "…"] },
-      "explorer":     { "model": ["9router/ag/gpt-oss-120b-medium", "…"] },
-      "designer":     { "model": ["9router/cx/gpt-5.6-luna", "…"] },
-      "fixer":        { "model": ["9router/cx/gpt-6-luna", "…"] },
-      "observer":     { "model": ["9router/ag/gemini-3.8-flash", "…"] },
-      "council":      { "model": ["9router/ag/claude-sonnet-4-6", "…"] }
+      "orchestrator": { "model": ["9router/ag/claude-sonnet-4-6", "9router/cbai/deepseek-v4.1-flash", "9router/cbai/glm-5.2"] },
+      "oracle":       { "model": ["9router/ag/claude-opus-4-6-thinking", "9router/ag/claude-sonnet-4-6", "9router/cbai/kimi-k2.7"] },
+      "explorer":     { "model": ["9router/cbai/deepseek-v4.1-flash", "9router/ag/gemini-3.8-flash-low", "9router/gh/gpt-4o-2024-08-06"] },
+      "designer":     { "model": ["9router/ag/gemini-3.8-flash", "9router/ag/gemini-3.8-flash-high", "9router/ag/claude-sonnet-4-6"] },
+      "fixer":        { "model": ["9router/ag/claude-sonnet-4-6", "9router/cbai/deepseek-v4.1-flash", "9router/cbai/glm-5.2"] },
+      "observer":     { "model": ["9router/ag/gemini-3.8-flash", "9router/ag/gemini-3.8-flash-high", "9router/ag/claude-sonnet-4-6"] },
+      "council":      { "model": ["9router/ag/claude-sonnet-4-6", "9router/cbai/deepseek-v4.1-flash", "9router/cbai/glm-5.2"] }
     }
   },
   "council": {
-    "default_preset": "default",
+    "default_preset": "diverse",
     "presets": {
+      "diverse": {
+        "alpha": { "model": "9router/ag/claude-opus-4-6-thinking", "variant": "high" },
+        "beta":  { "model": "9router/cbai/deepseek-v4.1-flash",   "variant": "high" },
+        "gamma": { "model": "9router/ag/gemini-3.8-flash",        "variant": "high" },
+        "delta": { "model": "9router/cbai/kimi-k2.7",             "variant": "high" }
+      },
       "default": {
-        "architect": { "model": "9router/ag/claude-opus-4-6-thinking",
-                       "prompt": "Focus on maintainability, boundaries, and long-term design." },
-        "reviewer":  { "model": "9router/cx/gpt-5.6-luna",
-                       "prompt": "Focus on bugs, edge cases, and failure modes." },
-        "optimiser": { "model": "9router/oc/deepseek-v4.1-flash-free",
-                       "prompt": "Focus on performance, latency, and resource usage." },
-        "visual":    { "model": "9router/ag/gemini-3.8-flash",
-                       "prompt": "Focus on UI/UX correctness, accessibility, and visual details." }
+        "architect": { "model": "9router/ag/claude-opus-4-6-thinking", "prompt": "Focus on maintainability, boundaries, and long-term design." },
+        "reviewer":  { "model": "9router/ag/claude-sonnet-4-6",        "prompt": "Focus on bugs, edge cases, and failure modes." },
+        "optimiser": { "model": "9router/cbai/deepseek-v4.1-flash",    "prompt": "Focus on performance, latency, and resource usage." },
+        "visual":    { "model": "9router/ag/gemini-3.8-flash",         "prompt": "Focus on UI/UX correctness, accessibility, and visual details." }
       }
     }
   }
 }
 ```
 
-Princípios da atribuição:
+### 9.1 Princípios que o seletor codifica
 
-- **Só modelos aprovados pela sonda** (HTTP 200 **e** tool calling OK).
-- **Diversidade de família** no `council` — assentos com a mesma família
-  reduzem a diversidade do consenso; assentos com famílias diferentes somam
-  visões realmente independentes.
-- `observer` precisa de um modelo **capaz de visão**.
-- `oracle` e o `architect` do council são os de **raciocínio** mais forte.
+- **Só modelos aprovados pela sonda** (HTTP 200 **e** tool calling OK). Nativo
+  do OpenCode sem sonda válida fica fora, mesmo existindo no catálogo.
+- **`designer` é `visao`-primeiro**, não `werkzeug`-primeiro: o papel trabalha a
+  partir de screenshot/mockup. Com a ordem antiga ele herdava a cadeia de texto
+  do `fixer`.
+- **`observer` exige visão** — a categoria `visao` só aceita modelo cujo
+  `capabilities.vision` do catálogo do 9router seja `true`.
+- **`oracle` e `council/architect` são `raciocinio`-primeiro**; `explorer` e
+  `council/optimiser` são `rapido`-primeiro (senão os dois assentos do conselho
+  herdavam a mesma cadeia do reviewer e o consenso perdia diversidade).
+- **Diversidade de família** nos assentos do `diverse`: Anthropic, DeepSeek,
+  Google e Moonshot. Assentos da mesma família somam pouca informação nova.
 
-Depois de editar a config:
+### 9.2 Pesquisa por papel (`model-history.sh`)
+
+A sonda mede latência e tool calling; ela não sabe qual modelo é melhor em cada
+papel. Isso entra pelo histórico persistente:
+
+```bash
+zsh ~/.local/share/9router-tools/model-history.sh record \
+  --model 9router/<id> --role <papel> --score <0.0-1.0> \
+  --verdict <best|good|weak|bad> --source <URL|no-public-benchmark> --note "<motivo>"
+zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
+```
+
+O seletor soma `1000 × research` à nota de qualidade, então a pesquisa domina a
+ordenação e a latência medida só desempata. O histórico é cumulativo: um modelo
+com nota alta que não respondeu nesta rodada continua como fallback
+(`[histórico]`).
+
+> **Recuperação:** `--reuse-probe` reaproveita `probe.jsonl` +
+> `probe-native.jsonl` quando a sonda já rodou por completo e só a etapa de
+> gravação falhou. Não é o fluxo normal — o fluxo normal sempre sonda.
+
+Depois de editar/aplicar a config:
 
 ```bash
 opencode service restart
 ```
 
 > O OpenCode é cliente–servidor: editar a config **sem** reiniciar o serviço
-> não muda nada (divergência D10).
+> não muda nada (divergência D10). E `opencode service start` **não substitui**
+> um daemon já em execução (D20).
 
 ---
 
@@ -782,6 +835,9 @@ Contrato de autenticação:
 | `tools/install-command.sh` | instala/remove os comandos globais `/refresh_models_9router` e `/auto_select_models_oh_my_opencode_slim` |
 | `tools/sync-models.sh` | distribui os modelos aprovados pela sonda entre os agentes do `oh-my-opencode-slim` |
 | `tools/opencode-service.sh` | garante o daemon do OpenCode com o env do provider |
+| `tools/net-diag.sh` | diagnóstico DNS/TCP/TLS/HTTP do relay, do `opencode.ai` e do SSH (só leitura) |
+| `tools/pin-host.sh` | fixa/atualiza/remove o IP real do relay em `/etc/hosts` (`--status` \| `--dry-run` \| `--refresh` \| `--undo`) |
+| `tools/vpn-window.sh` | descobre no servidor as credenciais que faltam e aplica no `.env` em uma única execução (`--check` \| `--dry-run` \| `--force`) |
 
 Todos são **zsh**, idempotentes, e leem a configuração do `.env` — nenhum
 host, usuário ou URL real está hardcoded.
@@ -801,10 +857,136 @@ host, usuário ou URL real está hardcoded.
 | `Permit denied` no `sudo -n` | sem sudo NOPASSWD | ajuste as sudoers no servidor |
 | lockout no login do 9router | 4 tentativas falhas | aguarde o cooldown; não repita |
 | Editou o config e nada muda | daemon não reiniciado | `opencode service restart` |
+| atribuição gravada mas os agentes continuam nos modelos antigos | o plugin lê `oh-my-opencode-slim.jsonc` **antes** de `.json`; um script que grave `.json` escreve num arquivo ignorado | `zsh tools/select-models.sh --config ~/.config/opencode/oh-my-opencode-slim.jsonc` (os scripts já detectam `.jsonc`) |
+| `opencode-service.sh` "persiste" o env mas o daemon continua sem ele | `opencode service start` **não substitui** um daemon já rodando (inclusive o que a extensão do VS Code subiu) | rode `opencode service restart` de um shell com o `~/.zshenv` carregado |
 | `unit` não sobe | `.env` do servidor ausente | `EnvironmentFile` falha fechada — recrie o `~/.9router/.env` |
 | modelo existe no `/v1/models` mas não em `/models` | `providers.9router.models` desatualizado (o OpenCode não descobre modelos de provedor custom) | `/refresh_models_9router` (ou `zsh tools/sync-catalog.sh --apply`) |
 | `/refresh_models_9router` ou `/auto_select_models_oh_my_opencode_slim` não aparecem no TUI | comando não instalado/descoberto | `zsh tools/install-command.sh` e confirme os `.md` em `~/.config/opencode/commands/` |
 | `/refresh_models_9router` falha com "chave ausente" | sem `.env` e sem a cópia canônica | recrie `~/.config/venice-stack/9router.env` (600) |
+| túnel só responde com VPN ligada; sem VPN dá `SSL: certificate subject name 'Fortiguard SDNS Blocked Page'` | o resolver local **filtra** o domínio do relay e devolve o IP da block page | `zsh tools/net-diag.sh` para confirmar, `zsh tools/pin-host.sh` para fixar o IP real (ver §15) |
+| modelos `opencode/*` param de responder quando a VPN está ligada | a VPN troca o DNS/rota e bloqueia `opencode.ai` | `zsh tools/net-diag.sh --short` com a VPN ligada; a camada que falhar indica a correção (ver §15) |
+| `ssh` para o servidor dá `Connection timed out` sem VPN | firewall corporativo barra a porta 22 fora da VPN | use a VPN para a Fase 0/5; o túnel (443) não precisa dela |
+
+---
+
+## 15. Rede corporativa: resolver filtrado e VPN
+
+Duas falhas de rede produzem o mesmo sintoma ("o provider não responde") e
+têm causas opostas. `tools/net-diag.sh` separa as camadas — **DNS, TCP, TLS,
+HTTP** — e compara a resolução local com a real (via DNS-over-HTTPS):
+
+```bash
+zsh tools/net-diag.sh            # relatório completo por host
+zsh tools/net-diag.sh --short    # uma linha por host
+```
+
+| Veredito | Significado | Correção |
+| :--- | :--- | :--- |
+| `DNS_FILTRADO` | o resolver local devolve IP de block page (ex.: FortiGuard) | `zsh tools/pin-host.sh` (§15.1) |
+| `TCP_BLOQUEADO` | firewall/VPN barra a porta 443 | nada local resolve; libere a saída |
+| `TLS_INTERCEPTADO` | proxy inspecionando TLS (CN ≠ host) | o provider precisa confiar no CA do proxy |
+| `OK (HTTP 401)` | túnel no ar exigindo API key — esperado | — |
+| `ssh/22 blocked` | servidor só alcançável por VPN/allowlist | ligue a VPN para as fases de servidor |
+
+### 15.1 Túnel sem VPN — fixar o IP do relay
+
+O relay é um host Cloudflare. Quando o resolver da rede filtra o domínio, o
+`getent` devolve o IP da block page e o TLS falha com
+`certificate subject name 'Fortiguard SDNS Blocked Page'`.
+
+`tools/pin-host.sh` resolve o IP **real** por DoH e escreve um bloco marcado
+em `/etc/hosts` — só para o host do relay, sem trocar o resolver da máquina
+(que quebraria `search seas.local`):
+
+```bash
+zsh tools/pin-host.sh --status    # mostra o bloco atual + local vs. real
+zsh tools/pin-host.sh --dry-run   # mostra o que seria escrito
+zsh tools/pin-host.sh             # aplica (pede sudo)
+zsh tools/pin-host.sh --refresh   # re-resolve e reescreve
+zsh tools/pin-host.sh --undo      # remove o bloco
+```
+
+> **WSL:** `/etc/hosts` é regenerado a cada boot. Para o pin sobreviver, o
+> script avisa e instrui a desligar a geração (`generateHosts = false` em
+> `/etc/wsl.conf`). Sem isso, rode o script de novo depois de `wsl --shutdown`.
+>
+> **IP volátil:** o Cloudflare pode trocar o IP do relay. Se o túnel voltar a
+> falhar depois de semanas, `--refresh` resolve. O `--status` mostra a
+> divergência entre o IP fixado e o real.
+
+### 15.2 VPN ligada — por que o endpoint do OpenCode cai
+
+Medido nesta máquina (WSL2 + ProtonVPN no Windows, NAT): com a VPN ligada, o
+`opencode.ai` **resolve e conecta normalmente**, mas a requisição volta com
+
+```
+Free usage limit reached. Free models work in OpenCode (https://opencode.ai);
+subscribe to OpenCode Go to keep going.
+```
+
+Ou seja: não é DNS nem firewall — a cota do free tier é contada por **IP de
+saída**, e o IP compartilhado do túnel VPN já está estourado. Nada no cliente
+conserta isso.
+
+Três saídas, em ordem de robustez:
+
+1. **Não depender do free tier** (recomendado): com o provider `9router`
+   configurado e os papéis apontando para modelos do 9router, os agentes não
+   tocam em `opencode.ai`. A VPN deixa de importar — o relay do 9router é
+   Cloudflare na 443 e passa por qualquer túnel. É o resultado da
+   [Fase 3](#8-fase-3--sondagem-dos-modelos) + [Fase 4](#9-fase-4--atribuição-dos-modelos-aos-papéis).
+2. **Split tunnel**: excluir o tráfego do WSL da VPN. Em WSL2 NAT o tráfego
+   sai como se fosse do host Windows, então excluir "por app" não pega o WSL;
+   funciona melhor com `networkingMode=mirrored` no `.wslconfig`. É frágil e
+   depende da versão do cliente.
+3. **VPN só para administração**: com o pin do §15.1, o túnel funciona sem
+   VPN. A VPN passa a ser necessária só para o SSH (porta 22 bloqueada fora
+   dela) — e para isso existe o `tools/vpn-window.sh` (§15.3), que faz todo o
+   trabalho de servidor em uma única execução.
+
+Para saber em qual camada está a falha, rode **com a VPN ligada**:
+
+```bash
+zsh tools/net-diag.sh --short
+```
+
+### 15.3 `tools/vpn-window.sh` — o trabalho de servidor em uma janela de VPN
+
+Se você não pode ficar com a VPN ligada enquanto usa o agente, este script
+elimina a troca de contexto: ele liga-se ao servidor, coleta tudo o que só
+existe lá e aplica localmente, sem interação.
+
+```bash
+zsh tools/vpn-window.sh --check     # só testa o SSH
+zsh tools/vpn-window.sh --dry-run   # mostra o que seria gravado
+zsh tools/vpn-window.sh             # descobre + grava + sincroniza o catálogo
+zsh tools/vpn-window.sh --force     # sobrescreve valores já preenchidos
+```
+
+O que ele coleta (rotas *local-only* em `127.0.0.1:20128`, por SSH):
+
+| Destino | Variável |
+| :--- | :--- |
+| `GET /api/keys` (token CLI; fallback: login com `INITIAL_PASSWORD`) | `NINEROUTER_API_KEY` |
+| `GET /api/tunnel/status` → `publicUrl` | `NINEROUTER_RELAY_HOST` + `NINEROUTER_BASE_URL` |
+| `GET /api/tunnel/status` → `tunnelUrl` | `NINEROUTER_TUNNEL_HOST` |
+| `~/.9router/.env` → `JWT_SECRET` | `NINEROUTER_JWT_SECRET` |
+| `~/.9router/.env` → `INITIAL_PASSWORD` | `NINEROUTER_ADMIN_PASSWORD` |
+| `hostname` | `VENICE_SERVER_HOSTNAME` |
+
+Regras de escrita: só substitui valor **vazio ou placeholder** (a lista de
+placeholders inclui `troque-*`, `exemplo-*`, `servidor-*`, `sk-xxxx*`); um
+valor já preenchido e divergente é apenas reportado como `SKIP`, a menos que
+você passe `--force`. Grava no `.env` (600) **e** na cópia canônica. Depois
+roda `tools/sync-catalog.sh --apply` para preencher `providers.9router.models`.
+
+A resposta bruta do servidor fica em `/tmp/vpn-window-discovery.json` — se algo
+vier vazio, é ali que se vê o corpo real da rota (inclusive o código HTTP de
+`/api/keys` e o resultado do login).
+
+O que ele **não** faz: sonda de modelos e atribuição por papéis. Essas não
+precisam de VPN (com o pin do §15.1 o relay responde direto) e levam dezenas
+de minutos — rode depois, com a rede normal.
 
 ---
 
@@ -824,6 +1006,9 @@ tools/sync-catalog.sh               # opencode.json <- catálogo vivo do 9router
 tools/install-command.sh            # comandos globais (refresh + auto-select)
 tools/sync-models.sh                # distribui modelos aprovados entre os agentes
 tools/opencode-service.sh           # env do daemon do OpenCode
+tools/net-diag.sh                   # diagnostico de rede (DNS/TCP/TLS/HTTP)
+tools/pin-host.sh                   # IP do relay em /etc/hosts (resolver filtrado)
+tools/vpn-window.sh                 # descoberta de credenciais em janela de VPN
 ```
 
 Gitignored: `.env` (mode `600`), `probe.jsonl`, `*.log`, `*.bak`, `*.sqlite`.

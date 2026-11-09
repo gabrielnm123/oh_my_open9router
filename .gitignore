@@ -10,6 +10,7 @@
 # Backups e artefatos de operacao.
 *.bak
 probe.jsonl
+probe-native.jsonl
 *.log
 
 # Historico de modelos (sonda + pesquisa web): dado de operacao, nao codigo.

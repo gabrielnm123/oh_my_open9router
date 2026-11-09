@@ -231,22 +231,31 @@ if cmd == "score":
         bad("score exige --role")
     wanted = [role] + [a for a in agents if a != role]
     data = load()
-    out = {}
+
+    def canon(mid):
+        # O mesmo modelo pode ter entrada com e sem o prefixo de origem: `merge`
+        # grava `9router/<id>` (sonda) e `record` grava o id cru (pesquisa).
+        # Sem canonizar, a nota de pesquisa de um modelo ficava invisivel para o
+        # seletor, que consulta o id prefixado.
+        return mid[len("9router/"):] if mid.startswith("9router/") else mid
+
+    agg = {}
     for mid, m in data["models"].items():
-        research = 0.0
+        e = agg.setdefault(canon(mid), {"research": 0.0, "ok": 0, "fail": 0,
+                                        "assigned": 0, "last": {}})
         for r in wanted:
             rec = (m.get("research") or {}).get(r)
-            if rec and rec.get("score", 0) > research:
-                research = rec["score"]
+            if rec and rec.get("score", 0) > e["research"]:
+                e["research"] = rec["score"]
         probe = m.get("probe") or {}
-        assigned = max([(m.get("assigned") or {}).get(a, 0) for a in wanted] or [0])
-        out[mid] = {
-            "research": round(research, 3),
-            "ok": probe.get("ok", 0),
-            "fail": probe.get("fail", 0),
-            "assigned": assigned,
-            "last": probe.get("last", {}),
-        }
+        e["ok"] += int(probe.get("ok", 0))
+        e["fail"] += int(probe.get("fail", 0))
+        e["assigned"] = max(e["assigned"],
+                            max([(m.get("assigned") or {}).get(a, 0) for a in wanted] or [0]))
+        last = probe.get("last") or {}
+        if (last.get("ts") or "") >= (e["last"].get("ts") or ""):
+            e["last"] = last
+    out = {k: {**v, "research": round(v["research"], 3)} for k, v in agg.items()}
     print(json.dumps(out))
     raise SystemExit(0)
 
