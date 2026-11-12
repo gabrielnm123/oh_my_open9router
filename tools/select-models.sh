@@ -503,7 +503,13 @@ for cat, key in CATEGORIES.items():
     pool = [m for m in universe if REQUIRES[cat](m)]
     def _score(m, cat=cat, key=key):
         research, assigned = hscore(m, cat)
-        return key(m) + 1000.0 * research + 5 * assigned
+        # Aumenta o peso da research score para garantir que modelos com
+        # histórico forte (research >= 0.7 ou múltiplas aprovações) sejam
+        # preferencialmente selecionados antes da sonda "zerar" as notas.
+        # Isso torna o auto_select ciente do conhecimento acumulado da Fase 4.
+        research_bonus = research * 1500.0  # antes 1000.0
+        # Pequeno bônus por assigned count para quebrar ties
+        return key(m) + research_bonus + 5 * assigned
     # Ordena por tier primeiro: 9router antes de nativo, sempre.
     pools[cat] = sorted(pool, key=lambda m: (tier(m), -_score(m), m))
     log(f"pool {cat:<12}: {len(pool):>3} modelos")

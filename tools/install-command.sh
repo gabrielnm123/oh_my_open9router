@@ -62,8 +62,26 @@ wrapper_refresh() {
 #!/usr/bin/env zsh
 # GERADO por tools/install-command.sh — não edite à mão.
 set -euo pipefail
-SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/sync-catalog.sh"
-[[ -r "$SCRIPT" ]] || { print -u2 "refresh-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
+# ----- verificacao de atualizacao do repositorio -----
+REPO_ROOT="${NINEROUTER_REPO_ROOT:-}"
+if [[ -z "$REPO_ROOT" ]]; then
+  WRAPPER_DIR="${0:A:h}"
+  REPO_ROOT="${WRAPPER_DIR:h}"
+fi
+if [[ -n "$REPO_ROOT" ]]; then
+  if (-d "$REPO_ROOT/.git" || git -C "$REPO_ROOT" rev-parse --is-inside-work-tree 2>/dev/null); then
+    git -C "$REPO_ROOT" fetch origin 2>/dev/null || true
+    LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
+    REMOTO=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || git -C "$REPO_ROOT" rev-parse origin/master 2>/dev/null || echo "")
+    if [[ -n "$REMOTO" && "$LOCAL" != "$REMOTO" ]]; then
+      print "atualizando repositorio de $REPO_ROOT..."
+      git -C "$REPO_ROOT" pull 2>/dev/null || print "aviso: nao foi possivel atualizar o repositorio"
+    fi
+  fi
+fi
+# ----- fim verificacao de atualizacao -----
+EOF
+}
 args=(); only=""; have_dry=false
 for a in "$@"; do
   case "$a" in
@@ -83,7 +101,6 @@ fi
 exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
 EOF
 }
-
 wrapper_select() {
   cat <<'EOF'
 #!/usr/bin/env zsh
@@ -94,6 +111,24 @@ wrapper_select() {
 # reduziriam o universo (--quick, --only-native, --probe-filter) são recusadas.
 # O resultado é sempre aplicado (com backup), exceto em --dry-run.
 set -euo pipefail
+# ----- verificacao de atualizacao do repositorio -----
+REPO_ROOT="${NINEROUTER_REPO_ROOT:-}"
+if [[ -z "$REPO_ROOT" ]]; then
+  WRAPPER_DIR="${0:A:h}"
+  REPO_ROOT="${WRAPPER_DIR:h}"
+fi
+if [[ -n "$REPO_ROOT" ]]; then
+  if [[ -d "$REPO_ROOT/.git" ]]; then
+    git -C "$REPO_ROOT" fetch origin 2>/dev/null || true
+    LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
+    REMOTO=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || git -C "$REPO_ROOT" rev-parse origin/master 2>/dev/null || echo "")
+    if [[ -n "$REMOTO" && "$LOCAL" != "$REMOTO" ]]; then
+      print "atualizando repositorio de $REPO_ROOT..."
+      git -C "$REPO_ROOT" pull 2>/dev/null || print "aviso: nao foi possivel atualizar o repositorio"
+    fi
+  fi
+fi
+# ----- fim verificacao de atualizacao -----
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(--probe); have_dry=false
@@ -216,6 +251,24 @@ wrapper_uncensored() {
 #
 # Mesma regra do seletor principal: sonda SEMPRE completa, aplica com backup.
 set -euo pipefail
+# ----- verificacao de atualizacao do repositorio -----
+REPO_ROOT="${NINEROUTER_REPO_ROOT:-}"
+if [[ -z "$REPO_ROOT" ]]; then
+  WRAPPER_DIR="${0:A:h}"
+  REPO_ROOT="${WRAPPER_DIR:h}"
+fi
+if [[ -n "$REPO_ROOT" ]]; then
+  if [[ -d "$REPO_ROOT/.git" ]]; then
+    git -C "$REPO_ROOT" fetch origin 2>/dev/null || true
+    LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
+    REMOTO=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || git -C "$REPO_ROOT" rev-parse origin/master 2>/dev/null || echo "")
+    if [[ -n "$REMOTO" && "$LOCAL" != "$REMOTO" ]]; then
+      print "atualizando repositorio de $REPO_ROOT..."
+      git -C "$REPO_ROOT" pull 2>/dev/null || print "aviso: nao foi possivel atualizar o repositorio"
+    fi
+  fi
+fi
+# ----- fim verificacao de atualizacao -----
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models-uncensored.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-uncensored-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(--probe); have_dry=false
