@@ -86,7 +86,7 @@ if [[ -z "$REPO_ROOT" ]]; then
   REPO_ROOT="${WRAPPER_DIR:h}"
 fi
 if [[ -n "$REPO_ROOT" ]]; then
-  if (-d "$REPO_ROOT/.git" || git -C "$REPO_ROOT" rev-parse --is-inside-work-tree 2>/dev/null); then
+  if [[ -d "$REPO_ROOT/.git" ]] || git -C "$REPO_ROOT" rev-parse --is-inside-work-tree 2>/dev/null; then
     git -C "$REPO_ROOT" fetch origin 2>/dev/null || true
     LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
     REMOTO=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || git -C "$REPO_ROOT" rev-parse origin/master 2>/dev/null || echo "")
