@@ -46,9 +46,26 @@ install_file() {
 }
 
 write_generated() {
-  local dst="$1" mode="$2" fn="$3"
+  # $1 = destino, $2 = modo, $3 = função geradora, $4 = "zsh" para validar sintaxe
+  local dst="$1" mode="$2" fn="$3" check="${4:-}"
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/install-cmd.XXXXXX")"
-  "$fn" > "$tmp"
+  if ! "$fn" > "$tmp"; then
+    rm -f "$tmp"
+    log "ERRO: geração de $dst falhou (função $fn)"; return 1
+  fi
+  # Guarda contra heredoc truncado: um wrapper gerado pela metade e' um wrapper
+  # que nao faz nada (foi assim que o /auto_select_models_oh_my_opencode_slim
+  # ficou mudo). Antes de gravar, o arquivo precisa ser zsh valido E executar.
+  if [[ "$check" == "zsh" ]]; then
+    if ! zsh -n "$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      log "ERRO: $dst gerado com sintaxe zsh invalida — descartado"; return 1
+    fi
+    if ! grep -q '^exec ' "$tmp"; then
+      rm -f "$tmp"
+      log "ERRO: $dst gerado sem linha 'exec' (heredoc truncado) — descartado"; return 1
+    fi
+  fi
   if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then
     rm -f "$tmp"; chmod "$mode" "$dst" 2>/dev/null || true
     log "ok (já atualizado): $dst"; return 0
@@ -80,8 +97,8 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 # ----- fim verificacao de atualizacao -----
-EOF
-}
+SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/sync-catalog.sh"
+[[ -r "$SCRIPT" ]] || { print -u2 "refresh-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(); only=""; have_dry=false
 for a in "$@"; do
   case "$a" in
@@ -351,18 +368,19 @@ EOF
 
 
 do_install() {
+  local failed=0
   for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" \
            "${ROOT}/tools/select-models-uncensored.sh" "${ROOT}/tools/probe-models.sh" \
            "${ROOT}/tools/model-history.sh" "${ROOT}/tools/lib/venice-env.sh"; do
     [[ -r "$f" ]] || { log "ERRO: $f não encontrado"; exit 1; }
   done
   mkdir -p "$DATA_DIR/lib" "$BIN_DIR" "$CMD_DIR"
-  install_file "${ROOT}/tools/sync-catalog.sh"   "${DATA_DIR}/sync-catalog.sh"   0755
-  install_file "${ROOT}/tools/select-models.sh"  "${DATA_DIR}/select-models.sh"  0755
-  install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755
-  install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644
-  install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755
-  install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755
+  install_file "${ROOT}/tools/sync-catalog.sh"   "${DATA_DIR}/sync-catalog.sh"   0755 || failed=1
+  install_file "${ROOT}/tools/select-models.sh"  "${DATA_DIR}/select-models.sh"  0755 || failed=1
+  install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755 || failed=1
+  install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644 || failed=1
+  install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755 || failed=1
+  install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755 || failed=1
   # Histórico já acumulado no repo (execução manual) vira semente do instalado,
   # mas nunca sobrescreve um histórico instalado mais novo.
   if [[ -f "${ROOT}/model-history.json" && ! -f "${DATA_DIR}/model-history.json" ]]; then
@@ -370,12 +388,18 @@ do_install() {
     chmod 600 "${DATA_DIR}/model-history.json"
     log "semeado: ${DATA_DIR}/model-history.json (a partir do repo)"
   fi
-  write_generated "$REF_WRAPPER" 0755 wrapper_refresh
-  write_generated "$SEL_WRAPPER" 0755 wrapper_select
-  write_generated "$UNC_WRAPPER" 0755 wrapper_uncensored
-  write_generated "$REF_FILE"    0644 cmd_refresh
-  write_generated "$SEL_FILE"    0644 cmd_select
-  write_generated "$UNC_FILE"    0644 cmd_uncensored
+  # Um wrapper que falha nao pode derrubar os outros: cada geracao e'
+  # validada e o erro aparece no fim, com codigo de saida != 0.
+  write_generated "$REF_WRAPPER" 0755 wrapper_refresh       zsh || failed=1
+  write_generated "$SEL_WRAPPER" 0755 wrapper_select        zsh || failed=1
+  write_generated "$UNC_WRAPPER" 0755 wrapper_uncensored    zsh || failed=1
+  write_generated "$REF_FILE"    0644 cmd_refresh               || failed=1
+  write_generated "$SEL_FILE"    0644 cmd_select               || failed=1
+  write_generated "$UNC_FILE"    0644 cmd_uncensored           || failed=1
+  if (( failed )); then
+    log "ERRO: uma ou mais geracoes falharam (ver acima); nenhum arquivo invalido foi gravado"
+    exit 1
+  fi
   log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD} | /${UNC_CMD}"
   log "CLI: ${REF_WRAPPER} | ${SEL_WRAPPER} | ${UNC_WRAPPER} --dry-run"
 }
