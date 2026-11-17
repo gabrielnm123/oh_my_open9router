@@ -500,7 +500,8 @@ O mesmo instalador (`zsh tools/install-command.sh`) cria:
 | Caminho | Papel |
 | :--- | :--- |
 | `~/.local/share/9router-tools/select-models.sh` | motor de seleção |
-| `~/.local/share/9router-tools/probe-models.sh` | sonda de latência + tool calling |
+| `~/.local/share/9router-tools/probe-models.sh` | sonda de alcance (latência + tool calling) |
+| `~/.local/share/9router-tools/quality_probe.py` | tarefas graduadas que medem a **qualidade** (nota 0–1) |
 | `~/.local/share/9router-tools/model-history.sh` | histórico/ranking persistente por papel |
 | `~/.local/bin/auto-select-9router-models` | wrapper que valida as flags |
 | `~/.config/opencode/commands/auto_select_models_oh_my_opencode_slim.md` | o comando de barra |
@@ -510,15 +511,18 @@ Como ele decide:
 1. sonda **todos** os modelos do catálogo do 9router (`probe-models.sh`, sem
    filtro) e **todos** os nativos do OpenCode (`opencode/*`), com o mesmo teste
    de `get_weather`;
-2. considera aprovado só `HTTP 200` **e** tool call devolvido, nas duas pontas —
+2. mede **qualidade** de cada aprovado com tarefas curtas e graduadas
+   (`reasoning`, `json`, `coding`, `instruction`, `constraint`, `tool_call`) via
+   `quality_probe.py` — nota `0.0–1.0` gravada em `quality_score`;
+3. considera aprovado só `HTTP 200` **e** tool call devolvido, nas duas pontas —
    nativo que não foi pingado (ou que falhou) fica de fora, mesmo que apareça
    no catálogo do OpenCode;
-3. classifica por papel (`werkzeug`, `rapido`, `raciocinio`, `visao`,
+4. classifica por papel (`werkzeug`, `rapido`, `raciocinio`, `visao`,
    `nao_critico`) e escolhe até 3 referências por agente (principal +
    fallbacks), mais os quatro `council/*`;
-4. prefere o 9router (tier 0); se não houver nenhum aprovado, usa os nativos
+5. prefere o 9router (tier 0); se não houver nenhum aprovado, usa os nativos
    como plano B — se só existirem os free do OpenCode, são eles que entram;
-5. grava `~/.config/opencode/oh-my-opencode-slim.json` com backup em
+6. grava `~/.config/opencode/oh-my-opencode-slim.json` com backup em
    `~/.config/opencode/backups/` e reinicia o daemon (salvo `--no-restart`).
 
 Os arquivos de sonda (`probe.jsonl`, `probe-native.jsonl`) ficam ao lado dos
@@ -542,11 +546,13 @@ verificado do que um fallback que só quebra em produção.
 
 ### 6.6 Pesquisa web e histórico por papel
 
-A sonda mede o que **respondeu hoje**; ela não sabe se o modelo é bom na função.
-Por isso o comando de barra tem um segundo passo, obrigatório: depois da
-varredura, o agente pesquisa na web (benchmarks, tool calling, contexto,
-recusa/censura quando o alvo é o seletor uncensored) e grava as notas em um
-histórico cumulativo. Esse histórico entra na **próxima** execução.
+A sonda mede o que **respondeu hoje** e ainda roda uma bateria de tarefas
+graduadas (§8.1), mas uma nota medida em seis prompts curtos não esgota o que o
+modelo entrega na função. Por isso o comando de barra tem um segundo passo,
+obrigatório: depois da varredura, o agente pesquisa na web (benchmarks, tool
+calling, contexto, recusa/censura quando o alvo é o seletor uncensored) e grava
+as notas em um histórico cumulativo. Esse histórico entra na **próxima**
+execução.
 
 ```
 zsh ~/.local/share/9router-tools/model-history.sh record \
@@ -563,8 +569,9 @@ categorias internas `werkzeug`, `rapido`, `raciocinio`, `visao`, `nao_critico`.
 Como o histórico pesa na escolha:
 
 1. cada modelo recebe, por categoria, `research` (0–1) e `assigned` (quantas
-   vezes já foi escolhido); a ordenação soma `1000 * research + 5 * assigned` à
-   pontuação de qualidade/velocidade da sonda;
+   vezes já foi escolhido); a ordenação soma `1500 * research + 1500 * quality +
+   5 * assigned` à pontuação de qualidade/velocidade da sonda (`quality` é a
+   melhor nota medida nas tarefas graduadas — ver §8.1);
 2. pesquisa nova **pode derrubar** um modelo antes bem colocado — a última nota
    por papel vence, e o `research_log` guarda até 50 registros com fonte e data;
 3. um modelo com histórico forte (`research >= 0.7` ou 2+ aprovações) que **não
@@ -604,8 +611,9 @@ O `doctor` deve reportar `ok: true`.
 ## 8. Fase 3 — Sondagem dos modelos
 
 O script mede, para cada modelo do catálogo: **latência** (ttfb e total),
-**código HTTP** e **suporte a tool calling** (função `get_weather` com
-`tool_choice=auto`).
+**código HTTP**, **suporte a tool calling** (função `get_weather` com
+`tool_choice=auto`) e — por padrão — **qualidade**, com tarefas curtas e
+determinísticas corrigidas automaticamente (`tools/quality_probe.py`).
 
 ```bash
 zsh tools/probe-models.sh                          # sonda tudo
@@ -614,12 +622,33 @@ zsh tools/probe-models.sh --concurrency 6          # mais paralelismo
 zsh tools/probe-models.sh --repeat 2               # 2 requisições por modelo
 zsh tools/probe-models.sh --models lista.txt       # lista própria
 zsh tools/probe-models.sh --out probe.jsonl        # caminho de saída
+zsh tools/probe-models.sh --no-quality             # só alcance (HTTP/latência/tool)
 zsh tools/probe-models.sh --remote                # fallback por túnel SSH
 zsh tools/probe-models.sh --remote --server u@host # servidor explícito
 ```
 
 Saída: uma linha JSON por modelo em `probe.jsonl` (gitignored) + relatório
 tabular no stdout.
+
+### 8.1 Tarefas de qualidade (`quality_probe.py`)
+
+Cada aprovado recebe seis tarefas com resposta única e verificável, todas com
+`max_tokens` pequeno (a bateria inteira custa menos de 1k tokens por modelo):
+
+| Tarefa | O que mede | Resposta esperada |
+| :--- | :--- | :--- |
+| `reasoning` | raciocínio com critério de divisibilidade | `95` |
+| `json` | saída estruturada com schema e valores exatos | `{"soma":42,"par":true,"primos":[2,3,5]}` |
+| `coding` | `fib(10)` em Python | `55` |
+| `instruction` | seguir formato pedido | `a,e,i,o,u` |
+| `constraint` | substituir pares por `P` | `1,P,3,P,5,P,7,P,9,P` |
+| `tool_call` | tool call com nome **e argumentos** corretos | `get_weather("São Paulo")` |
+
+A nota `quality_score` é a fração ponderada de tarefas passadas (`0.0–1.0`), com
+o detalhe por tarefa em `quality_tasks`. Erro de rede/modelo vira `0.0` e **não**
+descarta o modelo — só o rebaixa na ordem. Desligue com `--no-quality` ou
+`PROBE_QUALITY=false`; por padrão a qualidade está **ligada**, inclusive no
+comando de barra.
 
 Por padrão, a sonda fala pelo relay público, nunca diretamente na porta `20128`.
 Se a API pública não expuser corretamente o catálogo/endpoints, `--remote` abre
@@ -705,10 +734,20 @@ zsh ~/.local/share/9router-tools/model-history.sh record \
 zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
 ```
 
-O seletor soma `1000 × research` à nota de qualidade, então a pesquisa domina a
-ordenação e a latência medida só desempata. O histórico é cumulativo: um modelo
-com nota alta que não respondeu nesta rodada continua como fallback
-(`[histórico]`).
+O seletor combina três sinais, nesta ordem de peso:
+
+| Sinal | Fonte | Peso |
+| :--- | :--- | :--- |
+| **qualidade medida** (`quality_score`) | tarefas graduadas da sonda (`quality_probe.py`) | `2000 × nota` |
+| `research` | histórico por papel (pesquisa web) | `1500 × nota` |
+| `assigned` | quantas vezes já foi escolhido | `5 × vezes` |
+
+A qualidade medida é o sinal mais forte: ela observa o modelo de fato, enquanto a
+pesquisa é uma nota de terceiro. Por isso um modelo antigo bem avaliado na web,
+mas que hoje acerta menos tarefas, perde para um modelo atual com `quality_score`
+alto — era exatamente o caso do `gpt-4o-2024-08-06`. O histórico também acumula
+a melhor qualidade já vista (`quality.best`), então uma tarefa isolada mal
+interpretada não apaga o modelo.
 
 > **Recuperação:** `--reuse-probe` reaproveita `probe.jsonl` +
 > `probe-native.jsonl` quando a sonda já rodou por completo e só a etapa de

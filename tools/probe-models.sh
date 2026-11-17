@@ -6,7 +6,12 @@
 # Para cada modelo do catalogo, mede:
 #   - latencia (ttfb = time to first byte, total = tempo de resposta);
 #   - codigo HTTP;
-#   - suporte a tool calling (funcao `get_weather`, com tool_choice=auto).
+#   - suporte a tool calling (funcao `get_weather`, com tool_choice=auto);
+#   - QUALIDADE (a menos que `--no-quality`): tarefas curtas e deterministicas
+#     com correcao automatica, via `tools/quality_probe.py`. A nota (0.0-1.0)
+#     e gravada em `quality_score` e e o que o seletor usa para ordenar os
+#     candidatos — antes a "qualidade" era so pesquisa web, que nao media o
+#     modelo de fato.
 #
 # Grava uma linha JSON por modelo em `probe.jsonl` (JSON Lines) e um relatorio
 # tabular no stdout.
@@ -26,6 +31,7 @@
 #   zsh tools/probe-models.sh --out probe.jsonl    # caminho de saida
 #   zsh tools/probe-models.sh --models lista.txt   # sonda uma lista propria
 #   zsh tools/probe-models.sh --quick              # subconjunto representativo
+#   zsh tools/probe-models.sh --no-quality         # so alcance (HTTP/latencia/tool)
 #   zsh tools/probe-models.sh --remote             # usa tunel SSH para o daemon
 #   zsh tools/probe-models.sh --remote --server usuario@host
 #
@@ -36,6 +42,7 @@
 #   PROBE_CONCURRENCY    (default: 4)
 #   PROBE_TIMEOUT        (default: 120, segundos por requisicao)
 #   PROBE_REPEAT         (default: 1)
+#   PROBE_QUALITY        (default: true; false = --no-quality)
 #   PROBE_QUICK_MODELS   (default: nucleo curado; usado por --quick)
 #   VENICE_STACK_SSH_HOST/USER (usados por --remote; vêm do .env)
 
@@ -64,6 +71,7 @@ APPEND=false
 QUICK=false
 REMOTE=false
 SERVER=""
+QUALITY="${PROBE_QUALITY:-true}"
 
 # Nomeadas em `--quick`: cobrem as familias que costumam ser boas em agentes
 # (qualidade, ferramenta, visao, rapidez) sem varrer as centenas de IDs.
@@ -84,6 +92,7 @@ while (( $# > 0 )); do
     --models)      MODELS_FILE="$2"; shift 2 ;;
     --filter)      FILTER="$2";      shift 2 ;;
     --quick)       QUICK=true;       shift ;;
+    --no-quality)  QUALITY=false;    shift ;;
     --remote)      REMOTE=true;      shift ;;
     --server)      SERVER="$2"; REMOTE=true; shift 2 ;;
     --append)      APPEND=true;      shift ;;
@@ -341,6 +350,32 @@ rec.update({
 })
 json.dump(rec, open(out, "w"))
 PY
+
+  # Qualidade: tarefas graduadas (reasoning, json, coding, instrucao,
+  # restricao e tool call com argumentos corretos). Falha aqui nao descarta o
+  # modelo — apenas o deixa com quality_score baixo na hora de ordenar.
+  if [[ "$QUALITY" == true ]]; then
+    local qout="$WORKDIR/$tag.quality.json"
+    python3 "${TOOLS_DIR}/quality_probe.py" \
+        --base-url "$BASE_URL" --api-key "$NINEROUTER_API_KEY" \
+        --model "$model" --timeout "$TIMEOUT" --out "$qout" \
+        >/dev/null 2>&1 || true
+    if [[ -r "$qout" ]]; then
+      python3 - "$out" "$qout" <<'PY'
+import json, sys
+out, qout = sys.argv[1], sys.argv[2]
+rec = json.load(open(out))
+try:
+    q = json.load(open(qout))
+except Exception:
+    raise SystemExit(0)
+rec["quality_score"] = q.get("quality_score")
+rec["quality_tasks"] = q.get("tasks")
+rec["quality_error"] = q.get("error")
+json.dump(rec, open(out, "w"))
+PY
+    fi
+  fi
 }
 
 # ------------------------------------------------------------------ execucao --
@@ -407,6 +442,18 @@ print(f"  HTTP 200 + tool calling  : {len(both):>3}  {pct(len(both))}")
 print()
 print(f"  latencia mediana (todos os 200): {med([r['latency_ms'] for r in ok_http])} ms")
 print(f"  latencia mediana (tool ok)    : {med([r['latency_ms'] for r in tool_ok])} ms")
+print()
+
+qual = [r for r in rows if isinstance(r.get("quality_score"), (int, float))]
+if qual:
+    media = sum(r["quality_score"] for r in qual) / len(qual)
+    print(f"  qualidade (0-1)              : {len(qual):>3} medidos · media {media:.3f}")
+    print("  top 5 em qualidade (so os aprovados):")
+    for r in sorted((r for r in qual if r in both),
+                    key=lambda x: -x["quality_score"])[:5]:
+        print(f"    {r['quality_score']:.2f}  {r['model']}")
+else:
+    print("  qualidade (0-1)              : nao medida (--no-quality)")
 print()
 
 by_status = Counter(r.get("http_status") for r in rows)

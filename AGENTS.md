@@ -177,6 +177,13 @@ Criar o script de teste de latência e suporte a tool calling (`get_weather`) sa
 A sonda é **sempre completa**: catálogo inteiro do 9router + todos os nativos do
 OpenCode, sem filtro e sem `--quick`. Nenhum resultado antigo é reaproveitado.
 
+Além de alcance (HTTP, latência, tool calling), a sonda mede **qualidade** por
+padrão: tarefas curtas e graduadas (`reasoning`, `json`, `coding`,
+`instruction`, `constraint`, `tool_call`) via `tools/quality_probe.py`, com nota
+`quality_score` 0.0–1.0 por modelo. A qualidade mede-se ligada; use `--no-quality`
+ou `PROBE_QUALITY=false` só para depuração. A nota medida pesa mais que a pesquisa
+web na ordenação do seletor (ver `README.md` §8.1).
+
 ---
 
 ## Fase 4 — Atribuição aos Agentes
@@ -198,10 +205,12 @@ zsh ~/.local/share/9router-tools/model-history.sh record \
 zsh ~/.local/share/9router-tools/model-history.sh ranking --role <papel> --limit 15
 ```
 
-O histórico é cumulativo e entra na execução seguinte: a nota de pesquisa pesa
-mais que latência medida, e um modelo com histórico forte que não respondeu
-nesta rodada continua como fallback (`[histórico]`). Arquivo:
-`model-history.json` (`600`, gitignored). `--dry-run` não escreve.
+O histórico é cumulativo e entra na execução seguinte: a **qualidade medida** na
+sonda (`quality_score`, peso 2000) e o `research` (peso 1500) pesam mais que
+latência medida, e um modelo com histórico forte que não respondeu nesta rodada
+continua como fallback (`[histórico]`). O histórico também guarda a melhor
+qualidade já vista (`quality.best`). Arquivo: `model-history.json` (`600`,
+gitignored). `--dry-run` não escreve.
 
 ---
 

@@ -107,6 +107,7 @@ def model_entry(data, mid):
     m.setdefault("first_seen", now())
     m.setdefault("last_seen", now())
     m.setdefault("probe", {"ok": 0, "fail": 0, "last": {}})
+    m.setdefault("quality", {"score": None, "best": 0.0, "tasks": None, "ts": None})
     m.setdefault("research", {})
     m.setdefault("research_log", [])
     m.setdefault("assigned", {})
@@ -218,6 +219,18 @@ if cmd == "merge":
             "tool_call_ok": bool(r.get("tool_call_ok")),
             "latency_ms": r.get("latency_ms"),
         }
+        # Qualidade medida na sonda (tarefas graduadas). Guarda a ultima e a
+        # melhor ja vistas: uma tarefa isolada mal interpretada nao apaga o
+        # historico de qualidade do modelo.
+        q = r.get("quality_score")
+        if isinstance(q, (int, float)):
+            prev = m.get("quality") or {}
+            m["quality"] = {
+                "score": round(float(q), 4),
+                "best": round(max(float(prev.get("best") or 0.0), float(q)), 4),
+                "tasks": r.get("quality_tasks"),
+                "ts": r.get("ts"),
+            }
         m["last_seen"] = r.get("ts") or now()
     data["last_probe_run"] = run_id
     save(data)
@@ -241,12 +254,23 @@ if cmd == "score":
 
     agg = {}
     for mid, m in data["models"].items():
-        e = agg.setdefault(canon(mid), {"research": 0.0, "ok": 0, "fail": 0,
+        e = agg.setdefault(canon(mid), {"research": 0.0, "quality": 0.0,
+                                        "ok": 0, "fail": 0,
                                         "assigned": 0, "last": {}})
         for r in wanted:
             rec = (m.get("research") or {}).get(r)
             if rec and rec.get("score", 0) > e["research"]:
                 e["research"] = rec["score"]
+        q = m.get("quality") or {}
+        qv = q.get("best")
+        if qv is None:
+            qv = q.get("score")
+        try:
+            qv = float(qv or 0.0)
+        except (TypeError, ValueError):
+            qv = 0.0
+        if qv > e["quality"]:
+            e["quality"] = qv
         probe = m.get("probe") or {}
         e["ok"] += int(probe.get("ok", 0))
         e["fail"] += int(probe.get("fail", 0))
@@ -255,7 +279,8 @@ if cmd == "score":
         last = probe.get("last") or {}
         if (last.get("ts") or "") >= (e["last"].get("ts") or ""):
             e["last"] = last
-    out = {k: {**v, "research": round(v["research"], 3)} for k, v in agg.items()}
+    out = {k: {**v, "research": round(v["research"], 3),
+               "quality": round(v["quality"], 3)} for k, v in agg.items()}
     print(json.dumps(out))
     raise SystemExit(0)
 
@@ -295,14 +320,22 @@ if cmd == "ranking":
             score = max([r.get("score", 0) for r in roles.values()] or [0])
             verdict = ""
         probe = m.get("probe") or {}
-        rows.append((score, probe.get("ok", 0), probe.get("fail", 0), mid, verdict))
+        q = m.get("quality") or {}
+        qv = q.get("best")
+        if qv is None:
+            qv = q.get("score")
+        try:
+            qv = float(qv or 0.0)
+        except (TypeError, ValueError):
+            qv = 0.0
+        rows.append((score, probe.get("ok", 0), probe.get("fail", 0), mid, verdict, qv))
     rows.sort(key=lambda x: (-x[0], -(x[1] - x[2]), x[3]))
     if not rows:
         print("[history] vazio" + (f" para {role}" if role else ""))
         raise SystemExit(0)
-    print(f"{'score':>6}  {'ok/fail':>7}  {'verdict':<8}  modelo")
-    for score, ok, fail, mid, verdict in rows[:limit]:
-        print(f"{score:>6.2f}  {ok:>3}/{fail:<3}  {verdict:<8}  {mid}")
+    print(f"{'score':>6}  {'ok/fail':>7}  {'verdict':<8}  {'qualidade':>8}  modelo")
+    for score, ok, fail, mid, verdict, qv in rows[:limit]:
+        print(f"{score:>6.2f}  {ok:>3}/{fail:<3}  {verdict:<8}  {qv:>8.2f}  {mid}")
     raise SystemExit(0)
 
 if cmd == "show":

@@ -23,3 +23,7 @@ model-history.json.tmp
 !.env.example
 !**/.env.example
 !**/*.env.example
+
+# Cache de bytecode Python (quality_probe.py e futuros modulos).
+__pycache__/
+*.pyc

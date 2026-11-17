@@ -65,6 +65,7 @@ QUICK=false
 ONLY_NATIVE=false
 REMOTE=false
 SERVER=""
+QUALITY="${PROBE_QUALITY:-true}"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -87,6 +88,7 @@ while (( $# > 0 )); do
     --config)       CONFIG="$2";  shift 2 ;;
     --history)      HISTORY="$2"; shift 2 ;;
     --no-history)   HISTORY_ENABLED=false; shift ;;
+    --no-quality)   QUALITY=false; shift ;;
     -h|--help)      sed -n '2,40p' "$0"; exit 0 ;;
     *) printf '[select] opcao desconhecida: %s\n' "$1" >&2; exit 1 ;;
   esac
@@ -105,6 +107,7 @@ probe_9router() {
   [[ -n "$PROBE_FILTER" ]] && { warn "--probe-filter '${PROBE_FILTER}': pool parcial (debug)"; extra=(--filter "$PROBE_FILTER"); }
   [[ "$REMOTE" == true ]] && extra+=(--remote)
   [[ -n "$SERVER" ]] && extra+=(--server "$SERVER")
+  [[ "$QUALITY" == false ]] && extra+=(--no-quality)
   log "sondando o 9router (concurrency=${PROBE_CONCURRENCY})..."
   zsh "${TOOLS_DIR}/probe-models.sh" \
       --concurrency "$PROBE_CONCURRENCY" --out "$PROBE_OUT" "${extra[@]}" \
@@ -176,9 +179,34 @@ PY
         2>/dev/null)" || w="0 0 0"
     read -r http_code ttfb total <<< "$w"
     grep -q '"name"[[:space:]]*:[[:space:]]*"get_weather"' "$body" 2>/dev/null && tool_ok=true
-    python3 - "$NATIVE_OUT" "$mid" "$http_code" "$ttfb" "$total" "$tool_ok" <<'PY'
+    # Qualidade dos nativos: mesma bateria de tarefas graduadas, direto no
+    # endpoint do provedor (ID sem prefixo, credencial "public").
+    qscore=""; qtasks=""; qerror=""
+    if [[ "$QUALITY" == true ]]; then
+      local qout; qout="$(mktemp "${TMPDIR:-/tmp}/native-quality.XXXXXX")"
+      python3 "${TOOLS_DIR}/quality_probe.py" \
+          --base-url "https://opencode.ai/inference/openai/v1" --api-key public \
+          --model "${mid##*/}" --timeout 60 --out "$qout" \
+          >/dev/null 2>&1 || true
+      if [[ -r "$qout" ]]; then
+        read -r qscore qtasks qerror <<< "$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+t = d.get("tasks")
+print(d.get("quality_score") if d.get("quality_score") is not None else "",
+      json.dumps(t, ensure_ascii=False) if t else "",
+      d.get("error") or "")
+' "$qout")"
+      fi
+      rm -f "$qout"
+    fi
+    python3 - "$NATIVE_OUT" "$mid" "$http_code" "$ttfb" "$total" "$tool_ok" \
+             "$qscore" "$qtasks" "$qerror" <<'PY'
 import json, sys, time
-out, model, code, ttfb, total, tool_ok = sys.argv[1:7]
+out, model, code, ttfb, total, tool_ok, qscore, qtasks, qerror = sys.argv[1:10]
 def ms(x):
     try:
         return int(float(x) * 1000)
@@ -192,9 +220,12 @@ rec = {
     "ttfb_ms": ms(ttfb),
     "latency_ms": ms(total),
     "source": "native",
+    "quality_score": float(qscore) if qscore not in ("", None) else None,
+    "quality_tasks": json.loads(qtasks) if qtasks else None,
+    "quality_error": qerror or None,
 }
 with open(out, "a") as fh:
-    fh.write(json.dumps(rec) + "\n")
+    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 PY
     rm -f "$body"
   done <<< "$ids"
@@ -350,6 +381,14 @@ def probe_for(mid):
             or probes.get(bare(mid))
             or {})
 
+def measured_quality(mid):
+    """Nota de qualidade medida na sonda (0.0-1.0); 0 se nao foi medida."""
+    q = probe_for(mid).get("quality_score")
+    try:
+        return float(q) if q is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
 def quality(mid):
     m = meta(mid)
     r = probe_for(mid)
@@ -361,6 +400,9 @@ def quality(mid):
         + (4 if m["reasoning"] else 0)
         + (2 if m["vision"] else 0)
         - min(lat, 60000) // 1000
+        # Qualidade medida (tarefas graduadas) pesa mais que a pesquisa web:
+        # ela observa o modelo de fato, nao uma nota de terceiro.
+        + 2000.0 * measured_quality(mid)
     )
 
 def speed(mid):
@@ -412,6 +454,10 @@ log(f"testados: {testados_9} no 9router · {testados_nativo} nativos do OpenCode
 
 log(f"aprovados: {len(by_tier[0])} no 9router · {len(by_tier[1])} nativos do OpenCode"
     + (" (--only-native: 9router ignorado)" if only_native else ""))
+
+_q = [measured_quality(m) for m in universe]
+if _q:
+    log(f"qualidade media medida: {sum(_q) / len(_q):.3f} (max {max(_q):.3f})")
 
 AGENT_PROFILES = {
     "orchestrator":  ["werkzeug", "raciocinio", "nao_critico"],
@@ -476,7 +522,8 @@ def hscore(mid, cat):
     # era perdida e o seletor ignorava o passo de pesquisa da Fase 4.
     h = hist.get(cat) or {}
     e = h.get(mid) or h.get(bare(mid)) or {}
-    return float(e.get("research") or 0.0), int(e.get("assigned") or 0)
+    return (float(e.get("research") or 0.0), int(e.get("assigned") or 0),
+            float(e.get("quality") or 0.0))
 
 def stale_candidates(cat):
     """Modelos que nao responderam agora, mas tem historico forte.
@@ -491,9 +538,10 @@ def stale_candidates(cat):
         if full_id in universe or mid in universe:
             continue
         research = float(e.get("research") or 0.0)
+        hq = float(e.get("quality") or 0.0)
         ok, fail = int(e.get("ok") or 0), int(e.get("fail") or 0)
-        if research >= 0.7 or (ok >= 2 and ok > fail):
-            out.append((-research, -(ok - fail), full_id))
+        if research >= 0.7 or hq >= 0.7 or (ok >= 2 and ok > fail):
+            out.append((-max(research, hq), -(ok - fail), full_id))
     return [m for _r, _d, m in sorted(out)]
 
 stale_picked = []
@@ -502,14 +550,17 @@ pools = {}
 for cat, key in CATEGORIES.items():
     pool = [m for m in universe if REQUIRES[cat](m)]
     def _score(m, cat=cat, key=key):
-        research, assigned = hscore(m, cat)
+        research, assigned, hq = hscore(m, cat)
         # Aumenta o peso da research score para garantir que modelos com
         # histórico forte (research >= 0.7 ou múltiplas aprovações) sejam
         # preferencialmente selecionados antes da sonda "zerar" as notas.
         # Isso torna o auto_select ciente do conhecimento acumulado da Fase 4.
         research_bonus = research * 1500.0  # antes 1000.0
+        # Qualidade acumulada (tarefas graduadas) entra no mesmo peso da
+        # pesquisa: e a unica sinal que observa o modelo de fato.
+        hist_quality_bonus = hq * 1500.0
         # Pequeno bônus por assigned count para quebrar ties
-        return key(m) + research_bonus + 5 * assigned
+        return key(m) + research_bonus + hist_quality_bonus + 5 * assigned
     # Ordena por tier primeiro: 9router antes de nativo, sempre.
     pools[cat] = sorted(pool, key=lambda m: (tier(m), -_score(m), m))
     log(f"pool {cat:<12}: {len(pool):>3} modelos")

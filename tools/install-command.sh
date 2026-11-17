@@ -216,6 +216,12 @@ melhores por papel (orchestrator, oracle, explorer, designer, fixer, observer,
 council + councillors) e **sempre aplica** no
 \`~/.config/opencode/oh-my-opencode-slim.json\` com backup.
 
+A sonda mede três coisas: **alcance** (HTTP 200 + tool calling), **latência** e
+**qualidade** — esta última por tarefas curtas e graduadas (\`reasoning\`,
+\`json\`, \`coding\`, \`instruction\`, \`constraint\`, \`tool_call\`) via
+\`tools/quality_probe.py\`, que devolve uma nota 0.0–1.0 por modelo. A nota
+medida pesa mais que a pesquisa web na hora de ordenar os candidatos.
+
 A varredura completa demora (dezenas de minutos); é o preço de não escolher a
 partir de dados velhos ou de um pool reduzido. \`--quick\`, \`--only-native\` e
 \`--probe-filter\` são ignorados de propósito.
@@ -251,10 +257,11 @@ Saída do seletor:
 
 Responda em português, curto e sem inventar:
 1. Quantos testados e quantos aprovados (9router + nativos)
-2. Principais mudanças por agente
-3. Caminho do backup caso tenha gravado
-4. Que o restart do daemon ficou pendente (se houve mudança)
-5. Em caso de erro, diga a causa e o próximo passo
+2. Qualidade média medida e o top 5 em qualidade (saída da sonda)
+3. Principais mudanças por agente
+4. Caminho do backup caso tenha gravado
+5. Que o restart do daemon ficou pendente (se houve mudança)
+6. Em caso de erro, diga a causa e o próximo passo
 
 Padrão: sonda completa + aplica, sem restart. Use \`--dry-run\` para sondar
 tudo e só mostrar o diff, \`--restart\` para reiniciar o daemon.
@@ -371,6 +378,7 @@ do_install() {
   local failed=0
   for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" \
            "${ROOT}/tools/select-models-uncensored.sh" "${ROOT}/tools/probe-models.sh" \
+           "${ROOT}/tools/quality_probe.py" \
            "${ROOT}/tools/model-history.sh" "${ROOT}/tools/lib/venice-env.sh"; do
     [[ -r "$f" ]] || { log "ERRO: $f não encontrado"; exit 1; }
   done
@@ -378,6 +386,7 @@ do_install() {
   install_file "${ROOT}/tools/sync-catalog.sh"   "${DATA_DIR}/sync-catalog.sh"   0755 || failed=1
   install_file "${ROOT}/tools/select-models.sh"  "${DATA_DIR}/select-models.sh"  0755 || failed=1
   install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755 || failed=1
+  install_file "${ROOT}/tools/quality_probe.py"  "${DATA_DIR}/quality_probe.py"  0755 || failed=1
   install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644 || failed=1
   install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755 || failed=1
   install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755 || failed=1
@@ -422,7 +431,7 @@ do_uninstall() {
 
 do_status() {
   log "repo: $ROOT"
-  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/model-history.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
+  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/quality_probe.py" "$DATA_DIR/model-history.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && printf '  [ok]  %s\n' "$f" || printf '  [--]  %s\n' "$f"
   done
   local hist="${DATA_DIR}/model-history.json"

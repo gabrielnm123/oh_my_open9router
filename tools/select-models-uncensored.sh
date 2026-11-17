@@ -56,6 +56,7 @@ only_native=false
 dry_run=false
 config_path=""
 probe_filter=""
+quality="${PROBE_QUALITY:-true}"
 history_path="${ROOT}/model-history.json"
 
 for arg in "$@"; do
@@ -72,6 +73,7 @@ for arg in "$@"; do
     --history=*)    history_path="${arg#--history=}" ;;
     --no-history)   history_path="" ;;
     --probe-filter=*) probe_filter="${arg#--probe-filter=}" ;;
+    --no-quality)   quality=false ;;
     *)              printf '[select-uncensored] AVISO: argumento ignorado: %s\n' "$arg" >&2 ;;
   esac
 done
@@ -106,6 +108,7 @@ if [[ "$do_probe" == true ]]; then
   probe_args=(--concurrency 6)
   [[ "$probe_quick" == true ]] && probe_args+=(--quick)
   [[ -n "$probe_filter" ]] && probe_args+=(--filter "$probe_filter")
+  [[ "$quality" == false ]] && probe_args+=(--no-quality)
   printf '[select-uncensored] rodando sonda...\n'
   zsh "${TOOLS_DIR}/probe-models.sh" "${probe_args[@]}"
 fi
@@ -267,6 +270,14 @@ def reward_penalty(mid):
         return -200
     return 0
 
+def measured_quality(mid):
+    """Nota de qualidade medida na sonda (0.0-1.0); 0 se nao foi medida."""
+    q = probe_for(mid).get("quality_score")
+    try:
+        return float(q) if q is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
 def quality(mid):
     m   = meta(mid)
     r   = probe_for(mid)
@@ -278,6 +289,8 @@ def quality(mid):
         + (4 if m["reasoning"] else 0)
         + (2 if m["vision"]    else 0)
         - min(lat, 60000) // 1000
+        # Qualidade medida (tarefas graduadas) pesa mais que a pesquisa web.
+        + 2000.0 * measured_quality(mid)
     )
 
 def speed(mid):
@@ -357,7 +370,8 @@ if history_on and os.path.exists(history_path):
 
 def hscore(mid, cat):
     e = (hist.get(cat) or {}).get(mid) or {}
-    return float(e.get("research") or 0.0), int(e.get("assigned") or 0)
+    return (float(e.get("research") or 0.0), int(e.get("assigned") or 0),
+            float(e.get("quality") or 0.0))
 
 def stale_candidates(cat):
     out = []
@@ -365,9 +379,10 @@ def stale_candidates(cat):
         if mid in universe:
             continue
         research = float(e.get("research") or 0.0)
+        hq = float(e.get("quality") or 0.0)
         ok, fail = int(e.get("ok") or 0), int(e.get("fail") or 0)
-        if research >= 0.7 or (ok >= 2 and ok > fail):
-            out.append((-research, -(ok - fail), mid))
+        if research >= 0.7 or hq >= 0.7 or (ok >= 2 and ok > fail):
+            out.append((-max(research, hq), -(ok - fail), mid))
     return [m for _r, _d, m in sorted(out)]
 
 stale_picked = []
@@ -377,9 +392,9 @@ for cat, key_fn in CATEGORIES.items():
     pool = [m for m in universe if REQUIRES[cat](m)]
     def _key(m, cat=cat, key_fn=key_fn):
         ut, pt = uncensored_tier(m)
-        research, assigned = hscore(m, cat)
+        research, assigned, hq = hscore(m, cat)
         base = key_fn(m)[2]          # -quality/-speed
-        return (ut, pt, base - 1000.0 * research - 5 * assigned, m)
+        return (ut, pt, base - 1500.0 * research - 1500.0 * hq - 5 * assigned, m)
     pools[cat] = sorted(pool, key=_key)
     log(f"pool {cat:<12}: {len(pool):>3} modelos")
 
