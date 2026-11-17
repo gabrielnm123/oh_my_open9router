@@ -214,7 +214,8 @@ Pinga e testa **todos** os modelos disponíveis (catálogo inteiro do 9router +
 todos os nativos do OpenCode), sem filtro e sem subconjunto, escolhe os
 melhores por papel (orchestrator, oracle, explorer, designer, fixer, observer,
 council + councillors) e **sempre aplica** no
-\`~/.config/opencode/oh-my-opencode-slim.json\` com backup.
+\`~/.config/opencode/oh-my-opencode-slim.jsonc\` (ou \`.json\`, o que o plugin
+resolver) com backup.
 
 A sonda mede três coisas: **alcance** (HTTP 200 + tool calling), **latência** e
 **qualidade** — esta última por tarefas curtas e graduadas (\`reasoning\`,

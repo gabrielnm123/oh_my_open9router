@@ -51,7 +51,16 @@ source "${TOOLS_DIR}/lib/venice-env.sh"
 
 PROBE_OUT="${ROOT}/probe.jsonl"
 NATIVE_OUT="${ROOT}/probe-native.jsonl"
-CONFIG="${HOME}/.config/opencode/oh-my-opencode-slim.json"
+# O plugin resolve `oh-my-opencode-slim.jsonc` ANTES de `.json` (é o `.jsonc`
+# que o instalador cria). Apontar para `.json` quando só existe `.jsonc` faz o
+# comando gravar num arquivo que o plugin ignora — a atribuição não surte efeito.
+_OC_CFG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
+if [[ -f "${_OC_CFG_DIR}/oh-my-opencode-slim.jsonc" ]]; then
+  CONFIG="${_OC_CFG_DIR}/oh-my-opencode-slim.jsonc"
+else
+  CONFIG="${_OC_CFG_DIR}/oh-my-opencode-slim.json"
+fi
+unset _OC_CFG_DIR
 HISTORY="${MODEL_HISTORY:-${ROOT}/model-history.json}"
 HISTORY_ENABLED=true
 APPLY=false
