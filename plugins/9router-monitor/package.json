@@ -1,0 +1,16 @@
+{
+  "name": "opencode-9router-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Painel ao vivo da sonda e da selecao de modelos do 9router dentro do TUI",
+  "exports": {
+    "./tui": "./src/tui.tsx"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": ">=2.0.0",
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
+  }
+}

@@ -15,6 +15,9 @@ ROOT="${0:A:h:h}"
 DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools"
 BIN_DIR="${XDG_BIN_HOME:-${HOME}/.local/bin}"
 CMD_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/commands"
+PLUGIN_SRC="${ROOT}/plugins/9router-monitor"
+PLUGIN_DST="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/plugins/9router-monitor"
+CLI_JSON="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/cli.json"
 
 REF_CMD="refresh_models_9router"
 SEL_CMD="auto_select_models_oh_my_opencode_slim"
@@ -375,6 +378,70 @@ EOF
 }
 
 
+install_plugin() {
+  # Plugin TUI do painel ao vivo: copia os arquivos e registra o caminho no
+  # cli.json sem apagar outros plugins (oh-my-opencode-slim, etc.).
+  [[ -r "${PLUGIN_SRC}/src/tui.tsx" && -r "${PLUGIN_SRC}/package.json" ]] || {
+    log "ERRO: plugin TUI ausente em $PLUGIN_SRC"; return 1
+  }
+  local f
+  for f in package.json src/tui.tsx; do
+    install_file "${PLUGIN_SRC}/$f" "${PLUGIN_DST}/$f" 0644 || return 1
+  done
+  python3 - "$CLI_JSON" "$PLUGIN_DST" <<'PY'
+import json, os, sys
+path, plugin = sys.argv[1], sys.argv[2]
+mode = None
+try:
+    mode = os.stat(path).st_mode
+    with open(path) as fh:
+        data = json.load(fh)
+except FileNotFoundError:
+    data = {"$schema": "https://opencode.ai/v2/cli.json"}
+except Exception:
+    data = {}
+plugins = data.get("plugins")
+if not isinstance(plugins, list):
+    plugins = []
+if plugin not in plugins:
+    plugins.append(plugin)
+    data["plugins"] = plugins
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    if mode is not None:
+        os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    print(f"[install-command] cli.json: plugin registrado: {plugin}")
+else:
+    print(f"[install-command] cli.json: plugin ja registrado: {plugin}")
+PY
+}
+
+uninstall_plugin() {
+  python3 - "$CLI_JSON" "$PLUGIN_DST" <<'PY'
+import json, os, sys
+path, plugin = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+plugins = data.get("plugins")
+if isinstance(plugins, list) and plugin in plugins:
+    data["plugins"] = [p for p in plugins if p != plugin]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, path)
+    print(f"[install-command] cli.json: plugin removido: {plugin}")
+PY
+  rm -f "${PLUGIN_DST}/package.json" "${PLUGIN_DST}/src/tui.tsx"
+  rmdir "${PLUGIN_DST}/src" "${PLUGIN_DST}" 2>/dev/null || true
+}
+
 do_install() {
   local failed=0
   for f in "${ROOT}/tools/sync-catalog.sh" "${ROOT}/tools/select-models.sh" \
@@ -398,6 +465,8 @@ do_install() {
     chmod 600 "${DATA_DIR}/model-history.json"
     log "semeado: ${DATA_DIR}/model-history.json (a partir do repo)"
   fi
+  install_plugin || failed=1
+
   # Um wrapper que falha nao pode derrubar os outros: cada geracao e'
   # validada e o erro aparece no fim, com codigo de saida != 0.
   write_generated "$REF_WRAPPER" 0755 wrapper_refresh       zsh || failed=1
@@ -410,7 +479,7 @@ do_install() {
     log "ERRO: uma ou mais geracoes falharam (ver acima); nenhum arquivo invalido foi gravado"
     exit 1
   fi
-  log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD} | /${UNC_CMD}"
+  log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD} | /${UNC_CMD} | /painel_9router"
   log "CLI: ${REF_WRAPPER} | ${SEL_WRAPPER} | ${UNC_WRAPPER} --dry-run"
 }
 
@@ -419,6 +488,7 @@ do_uninstall() {
   for f in "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && { rm -f "$f"; log "removido: $f"; n=1; }
   done
+  uninstall_plugin
   if [[ -f "${DATA_DIR}/model-history.json" ]]; then
     log "preservado: ${DATA_DIR}/model-history.json (histórico de modelos)"
   fi
@@ -432,9 +502,14 @@ do_uninstall() {
 
 do_status() {
   log "repo: $ROOT"
-  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/quality_probe.py" "$DATA_DIR/model-history.sh" "$DATA_DIR/lib/venice-env.sh" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
+  for f in "$DATA_DIR/sync-catalog.sh" "$DATA_DIR/select-models.sh" "$DATA_DIR/select-models-uncensored.sh" "$DATA_DIR/probe-models.sh" "$DATA_DIR/quality_probe.py" "$DATA_DIR/model-history.sh" "$DATA_DIR/lib/venice-env.sh" "$PLUGIN_DST/package.json" "$PLUGIN_DST/src/tui.tsx" "$REF_WRAPPER" "$SEL_WRAPPER" "$UNC_WRAPPER" "$REF_FILE" "$SEL_FILE" "$UNC_FILE"; do
     [[ -e "$f" ]] && printf '  [ok]  %s\n' "$f" || printf '  [--]  %s\n' "$f"
   done
+  if grep -Fq "$PLUGIN_DST" "$CLI_JSON" 2>/dev/null; then
+    printf '  [ok]  cli.json: plugin do painel registrado\n'
+  else
+    printf '  [--]  cli.json: plugin do painel NAO registrado\n'
+  fi
   local hist="${DATA_DIR}/model-history.json"
   if [[ -f "$hist" ]]; then
     printf '  [ok]  %s (%s modelos)\n' "$hist" \

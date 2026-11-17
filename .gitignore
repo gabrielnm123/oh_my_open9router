@@ -11,6 +11,7 @@
 *.bak
 probe.jsonl
 probe-native.jsonl
+*.progress.json
 *.log
 
 # Historico de modelos (sonda + pesquisa web): dado de operacao, nao codigo.

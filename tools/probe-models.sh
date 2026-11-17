@@ -43,6 +43,7 @@
 #   PROBE_TIMEOUT        (default: 120, segundos por requisicao)
 #   PROBE_REPEAT         (default: 1)
 #   PROBE_QUALITY        (default: true; false = --no-quality)
+#   PROGRESS_FILE        (default: <OUT sem .jsonl>.progress.json; progresso atomico)
 #   PROBE_QUICK_MODELS   (default: nucleo curado; usado por --quick)
 #   VENICE_STACK_SSH_HOST/USER (usados por --remote; vêm do .env)
 
@@ -65,6 +66,7 @@ CONCURRENCY="${PROBE_CONCURRENCY:-4}"
 TIMEOUT="${PROBE_TIMEOUT:-120}"
 REPEAT="${PROBE_REPEAT:-1}"
 OUT="${ROOT}/probe.jsonl"
+PROGRESS_FILE="${PROGRESS_FILE:-${OUT%.jsonl}.progress.json}"
 MODELS_FILE=""
 FILTER=""
 APPEND=false
@@ -190,6 +192,55 @@ fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/probe-models.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
+
+# Progresso estruturado para o painel ao vivo do OpenCode. Gravacao atomica
+# (tmp + rename) para o leitor nunca ver um JSON pela metade. O plugin TUI cai
+# para a contagem dos arquivos em $WORKDIR quando este arquivo nao existe.
+write_progress() {
+  local stage="$1"
+  [[ -n "$PROGRESS_FILE" ]] || return 0
+  python3 - "$PROGRESS_FILE" "$stage" "${#MODELS[@]}" "$WORKDIR" <<'PY'
+import json, os, re, sys, time
+path, stage, total, work = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+done = approved = 0
+quality_sum = 0.0
+quality_n = 0
+last = ""
+try:
+    names = os.listdir(work)
+except OSError:
+    names = []
+for name in names:
+    if not re.fullmatch(r"\d+\.json", name):
+        continue
+    try:
+        rec = json.load(open(os.path.join(work, name)))
+    except Exception:
+        continue
+    done += 1
+    if rec.get("http_status") == 200 and rec.get("tool_call_ok"):
+        approved += 1
+    q = rec.get("quality_score")
+    if isinstance(q, (int, float)):
+        quality_sum += float(q)
+        quality_n += 1
+    if rec.get("model") and not last:
+        last = str(rec["model"])
+payload = {
+    "stage": stage,
+    "done": done,
+    "total": total,
+    "approved": approved,
+    "quality": round(quality_sum / quality_n, 4) if quality_n else None,
+    "last": last,
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+tmp = path + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(payload, fh)
+os.replace(tmp, path)
+PY
+}
 
 # ------------------------------------------------------------------- worker ---
 
@@ -405,11 +456,13 @@ if [[ "$APPEND" == "false" ]]; then
 fi
 
 n=${#MODELS[@]}
+write_progress "sonda"
 for (( i = 1; i <= n; i++ )); do
   probe_worker "$i" "${MODELS[$i]}" &
-  if (( i % CONCURRENCY == 0 )); then wait; fi
+  if (( i % CONCURRENCY == 0 )); then wait; write_progress "sonda"; fi
 done
 wait
+write_progress "sonda"
 
 # Concatena em ordem de modelo (um JSON por linha).
 for (( i = 1; i <= n; i++ )); do
@@ -509,3 +562,4 @@ print("=" * 78)
 PY
 
 log "resultado em ${OUT} ($(wc -l < "$OUT") linhas)"
+write_progress "concluido"

@@ -589,6 +589,28 @@ ainda não existe (nunca sobrescreve), e `uninstall` preserva o arquivo.
 `--dry-run` **não** escreve no histórico; só `--apply` (o padrão do wrapper)
 grava sonda, notas e atribuições.
 
+### 6.7 Painel ao vivo no TUI
+
+O `zsh tools/install-command.sh` também instala o plugin TUI `9router-monitor`
+(de `plugins/9router-monitor/`) em
+`~/.config/opencode/plugins/9router-monitor` e registra o caminho no
+`cli.json`, preservando os outros plugins. Depois de rodar o instalador, use
+`/reload` no TUI (ou reabra o app) e:
+
+```
+/painel_9router          # abre o painel completo (f = tela cheia, esc = fecha)
+```
+
+Uma linha compacta aparece sempre no footer (`home.footer.status`) com etapa,
+progresso, aprovados e tempo decorrido. O painel é **somente leitura**: ele não
+interfere na sonda nem no daemon.
+
+Durante a sonda, o plugin lê `probe.progress.json` (gravado de forma atômica
+por `tools/probe-models.sh` via `PROGRESS_FILE`). Se o arquivo não existir —
+por exemplo, numa rodada iniciada antes da instalação do plugin — ele cai para
+a contagem dos arquivos em `/tmp/probe-models.*`. O progresso é ignorado pelo
+seletor; serve apenas para exibição.
+
 ---
 
 ## 7. Fase 2 — oh-my-opencode-slim
@@ -871,7 +893,7 @@ Contrato de autenticação:
 | `tools/probe-models.sh` | sonda latência + HTTP + tool calling do catálogo |
 | `tools/model-history.sh` | histórico/ranking por papel (`record` \| `merge` \| `score` \| `ranking` \| `assignment` \| `show` \| `path`) |
 | `tools/sync-catalog.sh` | sincroniza `providers.9router.models` do `opencode.json` com o catálogo vivo (`--apply`, `--only`, `--refresh`, `--prune`) |
-| `tools/install-command.sh` | instala/remove os comandos globais `/refresh_models_9router` e `/auto_select_models_oh_my_opencode_slim` |
+| `tools/install-command.sh` | instala/remove os comandos globais `/refresh_models_9router`, `/auto_select_models_oh_my_opencode_slim` e o plugin TUI `/painel_9router` |
 | `tools/sync-models.sh` | distribui os modelos aprovados pela sonda entre os agentes do `oh-my-opencode-slim` |
 | `tools/opencode-service.sh` | garante o daemon do OpenCode com o env do provider |
 | `tools/net-diag.sh` | diagnóstico DNS/TCP/TLS/HTTP do relay, do `opencode.ai` e do SSH (só leitura) |
@@ -1048,6 +1070,7 @@ tools/opencode-service.sh           # env do daemon do OpenCode
 tools/net-diag.sh                   # diagnostico de rede (DNS/TCP/TLS/HTTP)
 tools/pin-host.sh                   # IP do relay em /etc/hosts (resolver filtrado)
 tools/vpn-window.sh                 # descoberta de credenciais em janela de VPN
+plugins/9router-monitor/            # plugin TUI: painel ao vivo da sonda/selecao
 ```
 
 Gitignored: `.env` (mode `600`), `probe.jsonl`, `*.log`, `*.bak`, `*.sqlite`.
