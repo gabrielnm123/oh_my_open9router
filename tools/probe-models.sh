@@ -354,14 +354,30 @@ PY
   # Qualidade: tarefas graduadas (reasoning, json, coding, instrucao,
   # restricao e tool call com argumentos corretos). Falha aqui nao descarta o
   # modelo — apenas o deixa com quality_score baixo na hora de ordenar.
+  #
+  # So modelo APROVADO (HTTP 200 + tool call) entra na bateria: reprovado nao
+  # entra no pool de qualquer jeito, e 6 requisicoes em upstream pendurado
+  # (400/503 lento) travavam o lote inteiro de 8 por muitos minutos. O status
+  # e o tool call ficam no record consolidado ($out), nao em variavel solta.
   if [[ "$QUALITY" == true ]]; then
-    local qout="$WORKDIR/$tag.quality.json"
-    python3 "${TOOLS_DIR}/quality_probe.py" \
-        --base-url "$BASE_URL" --api-key "$NINEROUTER_API_KEY" \
-        --model "$model" --timeout "$TIMEOUT" --out "$qout" \
-        >/dev/null 2>&1 || true
-    if [[ -r "$qout" ]]; then
-      python3 - "$out" "$qout" <<'PY'
+    local approved
+    approved="$(python3 - "$out" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print("true" if d.get("http_status") == 200 and d.get("tool_call_ok") else "false")
+PY
+)"
+    if [[ "$approved" == "true" ]]; then
+      local qout="$WORKDIR/$tag.quality.json"
+      python3 "${TOOLS_DIR}/quality_probe.py" \
+          --base-url "$BASE_URL" --api-key "$NINEROUTER_API_KEY" \
+          --model "$model" --timeout "$TIMEOUT" --out "$qout" \
+          >/dev/null 2>&1 || true
+      if [[ -r "$qout" ]]; then
+        python3 - "$out" "$qout" <<'PY'
 import json, sys
 out, qout = sys.argv[1], sys.argv[2]
 rec = json.load(open(out))
@@ -374,6 +390,7 @@ rec["quality_tasks"] = q.get("tasks")
 rec["quality_error"] = q.get("error")
 json.dump(rec, open(out, "w"))
 PY
+      fi
     fi
   fi
 }
@@ -452,6 +469,8 @@ if qual:
     for r in sorted((r for r in qual if r in both),
                     key=lambda x: -x["quality_score"])[:5]:
         print(f"    {r['quality_score']:.2f}  {r['model']}")
+elif both:
+    print("  qualidade (0-1)              : nenhum modelo aprovado para medir")
 else:
     print("  qualidade (0-1)              : nao medida (--no-quality)")
 print()

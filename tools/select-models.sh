@@ -189,9 +189,10 @@ PY
     read -r http_code ttfb total <<< "$w"
     grep -q '"name"[[:space:]]*:[[:space:]]*"get_weather"' "$body" 2>/dev/null && tool_ok=true
     # Qualidade dos nativos: mesma bateria de tarefas graduadas, direto no
-    # endpoint do provedor (ID sem prefixo, credencial "public").
+    # endpoint do provedor (ID sem prefixo, credencial "public"). So para
+    # aprovados (HTTP 200 + tool call), pelo mesmo motivo do probe-models.sh.
     qscore=""; qtasks=""; qerror=""
-    if [[ "$QUALITY" == true ]]; then
+    if [[ "$QUALITY" == true && "$http_code" == "200" && "$tool_ok" == "true" ]]; then
       local qout; qout="$(mktemp "${TMPDIR:-/tmp}/native-quality.XXXXXX")"
       python3 "${TOOLS_DIR}/quality_probe.py" \
           --base-url "https://opencode.ai/inference/openai/v1" --api-key public \
