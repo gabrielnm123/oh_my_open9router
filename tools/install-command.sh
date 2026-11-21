@@ -100,6 +100,10 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 # ----- fim verificacao de atualizacao -----
+# ----- estado da maquina -----
+_MS="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/lib/machine-state.sh"
+[[ -x "$_MS" ]] && zsh "$_MS" check 2>/dev/null || true
+# ----- fim estado da maquina -----
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/sync-catalog.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "refresh-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(); only=""; have_dry=false
@@ -152,6 +156,10 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 # ----- fim verificacao de atualizacao -----
+# ----- estado da maquina -----
+_MS="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/lib/machine-state.sh"
+[[ -x "$_MS" ]] && zsh "$_MS" check 2>/dev/null || true
+# ----- fim estado da maquina -----
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-9router-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(--probe); have_dry=false
@@ -313,6 +321,10 @@ if [[ -n "$REPO_ROOT" ]]; then
   fi
 fi
 # ----- fim verificacao de atualizacao -----
+# ----- estado da maquina -----
+_MS="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/lib/machine-state.sh"
+[[ -x "$_MS" ]] && zsh "$_MS" check 2>/dev/null || true
+# ----- fim estado da maquina -----
 SCRIPT="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/select-models-uncensored.sh"
 [[ -r "$SCRIPT" ]] || { print -u2 "auto-select-uncensored-models: $SCRIPT ausente (rode zsh tools/install-command.sh)"; exit 1; }
 args=(--probe); have_dry=false
@@ -480,6 +492,7 @@ do_install() {
   install_file "${ROOT}/tools/probe-models.sh"   "${DATA_DIR}/probe-models.sh"   0755 || failed=1
   install_file "${ROOT}/tools/quality_probe.py"  "${DATA_DIR}/quality_probe.py"  0755 || failed=1
   install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644 || failed=1
+  install_file "${ROOT}/tools/lib/probe-sort-models.py" "${DATA_DIR}/lib/probe-sort-models.py" 0644 || failed=1
   install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755 || failed=1
   install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755 || failed=1
   install_file "${ROOT}/tools/print-model-dashboard.sh" "${DATA_DIR}/print-model-dashboard.sh" 0755 || failed=1
@@ -504,6 +517,9 @@ do_install() {
     log "ERRO: uma ou mais geracoes falharam (ver acima); nenhum arquivo invalido foi gravado"
     exit 1
   fi
+  # Registra o commit instalado no estado local desta máquina
+  install_file "${ROOT}/tools/lib/machine-state.sh" "${DATA_DIR}/lib/machine-state.sh" 0755 || true
+  zsh "${ROOT}/tools/lib/machine-state.sh" record --repo "${ROOT}" 2>/dev/null || true
   log "pronto. No TUI: /${REF_CMD} | /${SEL_CMD} | /${UNC_CMD} | /painel_9router"
   log "CLI: ${REF_WRAPPER} | ${SEL_WRAPPER} | ${UNC_WRAPPER} --dry-run"
 }

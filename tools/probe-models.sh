@@ -160,20 +160,7 @@ else
   CATALOG="$(curl -sS --max-time 60 \
       -H "Authorization: Bearer ${NINEROUTER_API_KEY}" \
       "${BASE_URL}/models")" || die "falha ao consultar o catalogo"
-  MODELS=("${(@f)$(printf '%s' "$CATALOG" | python3 -c "
-import json, sys
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except Exception:
-    sys.stderr.write('catalogo nao-JSON: ' + raw[:200] + '\n')
-    raise SystemExit(1)
-ids = [m['id'] for m in d.get('data', []) if m.get('id')]
-if not ids:
-    sys.stderr.write('catalogo vazio\n')
-    raise SystemExit(1)
-print('\n'.join(ids))
-")}")
+  MODELS=("${(@f)$(printf '%s' "$CATALOG" | python3 "${TOOLS_DIR}/lib/probe-sort-models.py" "${ROOT}/model-history.json")}")
   log "catalogo: ${#MODELS[@]} modelos"
 fi
 

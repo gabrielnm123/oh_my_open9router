@@ -18,6 +18,13 @@ probe-native.jsonl
 model-history.json
 model-history.json.tmp
 
+# Estado local por maquina: commit instalado, data, historico de aplicacoes.
+machine-state.json
+
+# Documentos locais por maquina: nao versionados, individuais por ambiente.
+PLAN.md
+HISTORY.md
+
 # O .env.example É versionado: e um modelo, nao contem segredo real.
 # As negacoes abaixo existem para sobrepor as regras acima, caso o padrao
 # *.env passe a casar com sufixos .example no futuro.
