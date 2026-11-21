@@ -787,3 +787,11 @@ if restart:
 else:
     log("daemon NAO reiniciado (--no-restart). Rode: opencode service restart")
 PY
+
+# Dashboard resumido para o chat/TUI
+if [[ -x "${ROOT}/tools/print-model-dashboard.sh" ]]; then
+  zsh "${ROOT}/tools/print-model-dashboard.sh"
+else
+  echo "Dashboard de modelos indisponível: tools/print-model-dashboard.sh não encontrado."
+fi
+

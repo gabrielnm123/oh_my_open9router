@@ -173,3 +173,7 @@ PY
 if [[ "$APPLY" == true ]]; then
   log "reinicie o daemon para o TUI enxergar o catalogo novo: opencode service restart"
 fi
+
+# Dashboard resumido para o chat/TUI
+_DASH="${0:A:h}/print-model-dashboard.sh"
+[[ -x "$_DASH" ]] && zsh "$_DASH" || true

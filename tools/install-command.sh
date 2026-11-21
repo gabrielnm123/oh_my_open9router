@@ -64,9 +64,9 @@ write_generated() {
       rm -f "$tmp"
       log "ERRO: $dst gerado com sintaxe zsh invalida — descartado"; return 1
     fi
-    if ! grep -q '^exec ' "$tmp"; then
+    if ! grep -q '/usr/bin/env zsh "\$SCRIPT"' "$tmp"; then
       rm -f "$tmp"
-      log "ERRO: $dst gerado sem linha 'exec' (heredoc truncado) — descartado"; return 1
+      log "ERRO: $dst gerado sem chamada ao script principal (heredoc truncado) — descartado"; return 1
     fi
   fi
   if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then
@@ -118,7 +118,10 @@ done
 if [[ "$have_dry" == false ]]; then
   args+=(--apply)
 fi
-exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
+/usr/bin/env zsh "$SCRIPT" "${args[@]}"
+# Dashboard de modelos no chat
+_DASH="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/print-model-dashboard.sh"
+[[ -x "$_DASH" ]] && zsh "$_DASH" || true
 EOF
 }
 wrapper_select() {
@@ -183,7 +186,10 @@ done
 if [[ "$have_dry" == false ]]; then
   args+=(--apply)
 fi
-exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
+/usr/bin/env zsh "$SCRIPT" "${args[@]}"
+# Dashboard de modelos no chat
+_DASH="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/print-model-dashboard.sh"
+[[ -x "$_DASH" ]] && zsh "$_DASH" || true
 EOF
 }
 
@@ -198,11 +204,16 @@ Saída do sincronizador:
 
 !\`${REF_WRAPPER} \$ARGUMENTS\`
 
-Responda em português, curto e sem inventar:
-1. Quantos modelos no catálogo e quantos no \`opencode.json\`
-2. Adicionados/removidos ou "nada a fazer"
-3. Caminho do backup caso tenha gravado
-4. Em caso de erro, diga a causa e o próximo passo
+Responda em português. Sua resposta DEVE conter, nesta ordem:
+
+1. O bloco DASHBOARD DE MODELOS exatamente como aparece na saída acima — copie-o
+   integralmente dentro de um bloco de código (triple backtick), sem resumir nem
+   omitir nenhuma linha.
+2. Depois do bloco, em texto livre:
+   - Quantos modelos no catálogo e quantos no \`opencode.json\`
+   - Adicionados/removidos ou "nada a fazer"
+   - Caminho do backup caso tenha gravado
+   - Em caso de erro, diga a causa e o próximo passo
 
 Use \`--dry-run\` para revisar. Padrão: aplica.
 EOF
@@ -259,13 +270,18 @@ Saída do seletor:
 
 !\`${SEL_WRAPPER} --no-restart \$ARGUMENTS\`
 
-Responda em português, curto e sem inventar:
-1. Quantos testados e quantos aprovados (9router + nativos)
-2. Qualidade média medida e o top 5 em qualidade (saída da sonda)
-3. Principais mudanças por agente
-4. Caminho do backup caso tenha gravado
-5. Que o restart do daemon ficou pendente (se houve mudança)
-6. Em caso de erro, diga a causa e o próximo passo
+Responda em português. Sua resposta DEVE conter, nesta ordem:
+
+1. O bloco DASHBOARD DE MODELOS exatamente como aparece na saída acima — copie-o
+   integralmente dentro de um bloco de código (triple backtick), sem resumir nem
+   omitir nenhuma linha.
+2. Depois do bloco, em texto livre:
+   - Quantos testados e quantos aprovados (9router + nativos)
+   - Qualidade média medida e o top 5 em qualidade
+   - Principais mudanças por agente
+   - Caminho do backup caso tenha gravado
+   - Restart do daemon pendente (se houve mudança): avise para rodar \`opencode service restart\`
+   - Em caso de erro, diga a causa e o próximo passo
 
 Padrão: sonda completa + aplica, sem restart. Use \`--dry-run\` para sondar
 tudo e só mostrar o diff, \`--restart\` para reiniciar o daemon.
@@ -323,7 +339,10 @@ done
 if [[ "$have_dry" == false ]]; then
   args+=(--apply)
 fi
-exec /usr/bin/env zsh "$SCRIPT" "${args[@]}"
+/usr/bin/env zsh "$SCRIPT" "${args[@]}"
+# Dashboard de modelos no chat
+_DASH="${XDG_DATA_HOME:-${HOME}/.local/share}/9router-tools/print-model-dashboard.sh"
+[[ -x "$_DASH" ]] && zsh "$_DASH" || true
 EOF
 }
 
@@ -363,13 +382,18 @@ Saída do seletor:
 
 !\`${UNC_WRAPPER} --no-restart \$ARGUMENTS\`
 
-Responda em português, curto e sem inventar:
-1. Quantos testados e quantos aprovados
-2. Família dominante escolhida por agente (ex.: cx/, gcli/, nous/)
-3. Principais mudanças por agente
-4. Caminho do backup caso tenha gravado
-5. Que o restart do daemon ficou pendente (se houve mudança)
-6. Em caso de erro, diga a causa e o próximo passo
+Responda em português. Sua resposta DEVE conter, nesta ordem:
+
+1. O bloco DASHBOARD DE MODELOS exatamente como aparece na saída acima — copie-o
+   integralmente dentro de um bloco de código (triple backtick), sem resumir nem
+   omitir nenhuma linha.
+2. Depois do bloco, em texto livre:
+   - Quantos testados e quantos aprovados
+   - Família dominante escolhida por agente (ex.: cx/, gcli/, nous/)
+   - Principais mudanças por agente
+   - Caminho do backup caso tenha gravado
+   - Restart do daemon pendente (se houve mudança): avise para rodar \`opencode service restart\`
+   - Em caso de erro, diga a causa e o próximo passo
 
 Padrão: sonda completa + aplica com \`--no-restart\`. Use \`--dry-run\` para só
 mostrar o diff, \`--restart\` para reiniciar o daemon. \`--quick\`,
@@ -458,6 +482,7 @@ do_install() {
   install_file "${ROOT}/tools/lib/venice-env.sh" "${DATA_DIR}/lib/venice-env.sh" 0644 || failed=1
   install_file "${ROOT}/tools/select-models-uncensored.sh" "${DATA_DIR}/select-models-uncensored.sh" 0755 || failed=1
   install_file "${ROOT}/tools/model-history.sh"  "${DATA_DIR}/model-history.sh"  0755 || failed=1
+  install_file "${ROOT}/tools/print-model-dashboard.sh" "${DATA_DIR}/print-model-dashboard.sh" 0755 || failed=1
   # Histórico já acumulado no repo (execução manual) vira semente do instalado,
   # mas nunca sobrescreve um histórico instalado mais novo.
   if [[ -f "${ROOT}/model-history.json" && ! -f "${DATA_DIR}/model-history.json" ]]; then

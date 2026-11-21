@@ -585,3 +585,7 @@ elif not no_restart and not do_restart:
     log("restart pendente. Rode: opencode service restart")
 
 PYEOF
+
+# Dashboard resumido para o chat/TUI
+_DASH="${0:A:h}/print-model-dashboard.sh"
+[[ -x "$_DASH" ]] && zsh "$_DASH" || true

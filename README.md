@@ -495,6 +495,43 @@ Custo: a varredura completa leva dezenas de minutos (201 modelos + nativos, com
 dados velhos é o defeito que este comando existe para evitar. Se a sonda
 falhar, o comando **não** aplica nada.
 
+#### Dashboard inline no chat
+
+Sempre que qualquer um dos três comandos de barra terminar, o resultado aparece
+**direto no chat** — sem abrir rota, sem painel externo. Exemplo de saída:
+
+```
+────────────────────────────────────────────────────────────────────────────────
+  DASHBOARD DE MODELOS — preset: 9router   última gravação: 2026-11-20 14:33
+────────────────────────────────────────────────────────────────────────────────
+
+Papel            Modelo principal                         Status               Fallbacks
+──────────────── ──────────────────────────────────────── ──────────────────── ──────────────────────
+orchestrator     gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.94   gh/gpt-4.1, ag/claude-sonnet-4-6
+oracle           gh/gpt-5.4-nano                          ✅ toolcall q=0.91   nous/upstage/solar-mini4:free
+explorer         gh/gpt-4-o-preview                       ✅ toolcall q=0.89   gh/gpt-4.1-2025-04-14
+designer         gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.92   gh/gpt-4.1
+fixer            gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.90   gh/gpt-4.1
+observer         gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.88   gh/gpt-4o-mini
+council          gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.93   ag/claude-sonnet-4-6
+
+Council seat     Modelo                                   Status
+──────────────── ──────────────────────────────────────── ────────────────────
+architect        gh/gpt-5.4-nano                          ✅ toolcall q=0.91
+reviewer         gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.92
+optimiser        gh/gpt-4-o-preview                       ✅ toolcall q=0.87
+visual           gh/gpt-4.1-2025-04-14                    ✅ toolcall q=0.90
+
+  ✅ Todos os papéis com modelo 9router atribuído.
+────────────────────────────────────────────────────────────────────────────────
+```
+
+O dashboard é gerado por `tools/print-model-dashboard.sh` e é chamado
+automaticamente ao final de cada wrapper (`refresh-9router-models`,
+`auto-select-9router-models`, `auto-select-uncensored-models`). Se o
+`probe.jsonl` estiver ausente (ainda sem sonda), os modelos aparecem como
+`⚠️ sem sonda` — isso é esperado e some após a próxima rodada completa.
+
 O mesmo instalador (`zsh tools/install-command.sh`) cria:
 
 | Caminho | Papel |
@@ -503,6 +540,7 @@ O mesmo instalador (`zsh tools/install-command.sh`) cria:
 | `~/.local/share/9router-tools/probe-models.sh` | sonda de alcance (latência + tool calling) |
 | `~/.local/share/9router-tools/quality_probe.py` | tarefas graduadas que medem a **qualidade** (nota 0–1) |
 | `~/.local/share/9router-tools/model-history.sh` | histórico/ranking persistente por papel |
+| `~/.local/share/9router-tools/print-model-dashboard.sh` | dashboard inline no chat |
 | `~/.local/bin/auto-select-9router-models` | wrapper que valida as flags |
 | `~/.config/opencode/commands/auto_select_models_oh_my_opencode_slim.md` | o comando de barra |
 
